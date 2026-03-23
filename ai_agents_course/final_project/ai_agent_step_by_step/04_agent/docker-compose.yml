@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  langflow:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./langflow_components:/app/langflow_components
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./rag_storage:/app/rag_storage
+      - langflow_data:/root/.langflow
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - LANGFLOW_AUTO_RELOAD=true
+      - LANGFLOW_DEV_MODE=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
+  langflow_data:

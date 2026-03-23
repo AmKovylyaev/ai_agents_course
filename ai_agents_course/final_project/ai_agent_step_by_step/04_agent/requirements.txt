@@ -1,0 +1,28 @@
+# Langflow
+# Langflow does not currently publish wheels for Python 3.14+
+langflow>=1.0.0
+
+# LLM
+litellm>=1.0.0
+openai
+
+# RAG
+faiss-cpu
+rank-bm25
+numpy
+ollama
+
+# ML/Data Science (for code execution)
+pandas
+matplotlib
+seaborn
+scikit-learn
+lightgbm
+joblib
+
+# Code Execution
+subprocess32; python_version < '3.0'
+
+# Utilities
+pydantic>=2.0.0
+python-dotenv

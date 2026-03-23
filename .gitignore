@@ -1,3 +1,12 @@
+todo.md
+*.csv
+.cursor
+**/dev_notes/
+**/tickets/
+**/.DS_Store
+ai_agents_course/final_project/ai_agent_step_by_step/04_agent/workspace/
+ai_agents_course/final_project/ai_agent_step_by_step/04_agent/rag_storage/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -205,3 +214,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# data/ — расширения из data/
+data/**/*.parquet
+data/**/*.mp4
+data/**/*.rtf
+data/**/*.pdf
