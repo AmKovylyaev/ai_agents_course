@@ -57,7 +57,7 @@ def run_pipeline() -> dict[str, Any]:
     }
 
     if cfg.logger:
-        cfg.logger.info("Loading data subset (20%% of train)...")
+        cfg.logger.info("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
 
     if cfg.logger:
