@@ -228,6 +228,27 @@ def step4_submission_fallback(state: dict) -> dict:
     return state
 
 
+def step_verify_fallback(state: dict) -> dict:
+    """Детерминированный фолбек для судьи: если LLM недоступна,
+    проверяем просто факт наличия обученной модели и метрик."""
+    state = dict(state)
+
+    metrics_path = Path(state["session_dir"]) / "reports" / "local_metrics.json"
+    model_path = Path(state["session_dir"]) / "models" / "model.joblib"
+
+    if metrics_path.exists() and model_path.exists():
+        state["verification_decision"] = "SUFFICIENT"
+        state["verification_reasoning"] = "Fallback: Metrics and model files found."
+    else:
+        state["verification_decision"] = "NEED_REFINEMENT"
+        state["verification_reasoning"] = "Fallback: Missing model or metrics files."
+
+    if cfg.logger:
+        cfg.logger.info("Step verify: Using fallback logic.")
+
+    return state
+
+
 def step7_report_fallback(state: dict) -> dict:
     """Fallback report: JSON + plain text summary, no LLM."""
     state = dict(state)

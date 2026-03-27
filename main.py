@@ -32,6 +32,7 @@ from steps_agent import (
     step2_train_agent,
     step3_local_eval_agent,
     step4_submission_agent,
+    step_verify_result_agent,
     step7_report_agent,
 )
 from steps_kaggle import step5_submit, step6_wait_results
@@ -74,6 +75,11 @@ def run_pipeline() -> dict[str, Any]:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step3_eval...")
     state = step3_local_eval_agent(state)
+
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Running step_verify...")
+    state = step_verify_result_agent(state)
 
     if cfg.logger:
         cfg.logger.info("=" * 60)

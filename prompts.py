@@ -106,6 +106,32 @@ Output ONLY executable Python code in a ```python code block.
 Use pandas, joblib, numpy.
 """
 
+STEP_VERIFY_PROMPT = """You are a Senior Data Scientist (Judge). Your task is to evaluate the results of a Machine Learning experiment for a Kaggle competition: predicting occupancy days (or idle days) for real estate rentals. This is a regression task; the evaluation metric is MSE (Mean Squared Error).
+
+Context:
+- EDA Summary: {eda_summary}
+- Local Metrics (validation MSE and possibly other regression metrics): {local_metrics}
+- Previous Code: {previous_code}
+
+Requirements:
+1. Analyze if the MSE is reasonable for this regression task. Compare with a simple baseline (e.g., predicting the mean target value). If the MSE is high relative to the target variance, it indicates poor performance.
+2. Check for overfitting if possible (e.g., by looking at training vs validation error, though we only have validation).
+3. Determine if the results are "SUFFICIENT" to proceed to submission or "NEED_REFINEMENT".
+4. If refinement is needed, provide concrete, actionable suggestions. Focus on:
+   - Feature engineering (e.g., date/time features, property characteristics, lag variables)
+   - Model choice (e.g., XGBoost, LightGBM, neural networks, ensemble)
+   - Hyperparameter tuning
+   - Handling outliers or target transformation (log, sqrt)
+   - Any other data-specific insights from EDA
+
+Your output MUST be a JSON-formatted string with:
+- "decision": "SUFFICIENT" or "NEED_REFINEMENT"
+- "reasoning": "Short explanation of your choice, referencing MSE value and potential baseline."
+- "suggestions": "What to improve if REFINEMENT is needed (e.g., 'try extracting day-of-week features from timestamp', 'use LightGBM with hyperparameter tuning', 'apply log transform to target')"
+
+Example: {{"decision": "NEED_REFINEMENT", "reasoning": "Validation MSE is 125.4, while baseline mean prediction MSE is 200, so it's better but still high.", "suggestions": "Add date features (month, day of week), use XGBoost with early stopping, and try log transformation on target."}}
+"""
+
 STEP7_REPORT_PROMPT = """You are an ML engineer. Write Python code to generate a final report.
 
 Context:

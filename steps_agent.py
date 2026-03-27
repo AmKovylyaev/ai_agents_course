@@ -9,6 +9,7 @@ from prompts import (
     STEP2_TRAIN_PROMPT,
     STEP3_EVAL_PROMPT,
     STEP4_SUBMISSION_PROMPT,
+    STEP_VERIFY_PROMPT,
     STEP7_REPORT_PROMPT,
 )
 from steps_fallback import (
@@ -16,6 +17,7 @@ from steps_fallback import (
     step2_train_fallback,
     step3_local_eval_fallback,
     step4_submission_fallback,
+    step_verify_fallback,
     step7_report_fallback,
 )
 
@@ -97,6 +99,73 @@ def step4_submission_agent(state: dict) -> dict:
         if cfg.logger:
             cfg.logger.warning("Submission agent failed, using fallback")
         return step4_submission_fallback(state)
+    return state
+
+
+def step_verify_result_agent(state: dict) -> dict:
+    """LLM as a judge: evaluates metrics and EDA, returns decision."""
+    import json
+    state = dict(state)
+    llm = cfg.get_llm()
+
+    if not llm:
+        if cfg.logger:
+            cfg.logger.warning("No LLM available for Judge, using fallback")
+        return step_verify_fallback(state)
+
+    eda_summary = state.get("eda_report", "No EDA summary available.")
+    if isinstance(eda_summary, str):
+        eda_summary = eda_summary[:1500]
+    else:
+        eda_summary = "No EDA summary."
+
+    local_metrics = state.get("local_metrics", {})
+    if local_metrics:
+        metrics_str = json.dumps(local_metrics, separators=(',', ':'))[:500]
+    else:
+        metrics_str = "{}"
+
+    previous_code = state.get("previous_code", "")
+    if previous_code and isinstance(previous_code, str):
+        previous_code = previous_code[:500] + "..." if len(previous_code) > 500 else previous_code
+    else:
+        previous_code = ""
+
+    if cfg.logger:
+        cfg.logger.info(f"Judge input sizes: eda={len(eda_summary)}, metrics={len(metrics_str)}, code={len(previous_code)}")
+
+    prompt_data = {
+        "eda_summary": eda_summary,
+        "local_metrics": metrics_str,
+        "previous_code": previous_code,
+    }
+
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    prompt = ChatPromptTemplate.from_messages([("human", STEP_VERIFY_PROMPT)])
+    chain = prompt | llm | StrOutputParser()
+
+    try:
+        response = chain.invoke(prompt_data)
+        if "```json" in response:
+            response = response.split("```json")[1].split("```")[0]
+        elif "```" in response:
+            response = response.split("```")[1].split("```")[0]
+        result = json.loads(response.strip())
+        state["verification_decision"] = result.get("decision", "NEED_REFINEMENT")
+        state["verification_reasoning"] = result.get("reasoning", "")
+        state["verification_suggestions"] = result.get("suggestions", "")
+        state["verification_raw"] = response
+    except Exception as e:
+        if cfg.logger:
+            cfg.logger.error(f"Judge LLM parsing failed: {e}")
+        return step_verify_fallback(state)
+
+    if cfg.logger:
+        cfg.logger.info("Judge decision: %s", state["verification_decision"])
+        if state["verification_decision"] == "NEED_REFINEMENT":
+            cfg.logger.info("Suggestions: %s", state["verification_suggestions"])
+
     return state
 
 
