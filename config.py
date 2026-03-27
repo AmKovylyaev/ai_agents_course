@@ -25,6 +25,9 @@ SAMPLE_SUBMISSION_FILE = "sample_submition.csv"
 
 COMPETITION = os.getenv("KAGGLE_COMPETITION", "mws-ai-agents-2026")
 
+TRAIN_SAMPLE_FRAC = 0.2
+TRAIN_SAMPLE_PCT = 100
+
 logger: logging.Logger | None = None
 
 
@@ -86,7 +89,7 @@ def get_llm():
 
 
 def load_data_subset(state: dict) -> dict:
-    """Load data files; use only 20 % of train for speed."""
+    """Load data files; use only TRAIN_SAMPLE_FRAC of train for speed."""
     try:
         import pandas as pd
     except ImportError:
@@ -110,12 +113,15 @@ def load_data_subset(state: dict) -> dict:
     train_path = Path(state["train_path"])
     if train_path.exists():
         train_df_full = pd.read_csv(train_path)
-        train_df = train_df_full.sample(frac=0.2, random_state=42)
+        train_df = train_df_full.sample(frac=TRAIN_SAMPLE_FRAC, random_state=42)
         state["train_df"] = train_df
         state["train_df_full"] = train_df_full
         state["train_shape"] = train_df.shape
         if logger:
-            logger.info("Loaded %d train samples (20%% of %d)", len(train_df), len(train_df_full))
+            logger.info(
+                "Loaded %d train samples (%d%% of %d)",
+                len(train_df), TRAIN_SAMPLE_PCT, len(train_df_full),
+            )
     else:
         if logger:
             logger.warning("Train file not found: %s", train_path)
