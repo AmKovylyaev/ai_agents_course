@@ -48,7 +48,7 @@ def step1_eda_fallback(state: dict) -> dict:
     eda_text = "\n\n".join(report_parts) if report_parts else "No data loaded."
     state["eda_report"] = eda_text
 
-    eda_file = state["session_dir"] / "reports" / "eda_summary.txt"
+    eda_file = Path(state["session_dir"]) / "reports" / "eda_summary.txt"
     with open(eda_file, "w", encoding="utf-8") as f:
         f.write(eda_text)
 
@@ -81,7 +81,7 @@ def step2_train_fallback(state: dict) -> dict:
         return state
 
     train_df_full = pd.read_csv(train_path)
-    train_df = train_df_full.sample(frac=0.2, random_state=42)
+    train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
 
     target_candidates = ["target", "label", "y"]
     target_col = None
@@ -106,7 +106,7 @@ def step2_train_fallback(state: dict) -> dict:
     model = RandomForestClassifier(n_estimators=50, random_state=42)
     model.fit(X_train, y_train)
 
-    model_path = state["session_dir"] / "models" / "model.joblib"
+    model_path = Path(state["session_dir"]) / "models" / "model.joblib"
     joblib.dump(model, model_path)
     state["model_path"] = str(model_path)
     state["model"] = model
@@ -143,7 +143,7 @@ def step3_local_eval_fallback(state: dict) -> dict:
 
     train_path = Path(state.get("train_path", ""))
     train_df_full = pd.read_csv(train_path)
-    train_df = train_df_full.sample(frac=0.2, random_state=42)
+    train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
 
     target_col = state.get("target_column", train_df.columns[-1])
     X = train_df.drop(columns=[target_col], errors="ignore").select_dtypes(include=["number"])
@@ -160,7 +160,7 @@ def step3_local_eval_fallback(state: dict) -> dict:
 
     state["local_metrics"] = {"accuracy": acc, "f1_macro": f1}
 
-    metrics_file = state["session_dir"] / "reports" / "local_metrics.json"
+    metrics_file = Path(state["session_dir"]) / "reports" / "local_metrics.json"
     with open(metrics_file, "w") as f:
         json.dump(state["local_metrics"], f, indent=2)
 
@@ -205,7 +205,7 @@ def step4_submission_fallback(state: dict) -> dict:
         X_test = test_df.select_dtypes(include=["number"])
 
     preds = model.predict(X_test)
-    out_path = state["session_dir"] / "submission.csv"
+    out_path = Path(state["session_dir"]) / "submission.csv"
 
     sample_path = Path(state.get("sample_submission_path", ""))
     if sample_path.exists():
@@ -243,8 +243,8 @@ def step7_report_fallback(state: dict) -> dict:
         "submission_status": state.get("submission_status", ""),
     }
 
-    report_path_json = state["session_dir"] / "reports" / "final_report.json"
-    report_path_txt = state["session_dir"] / "reports" / "final_report.txt"
+    report_path_json = Path(state["session_dir"]) / "reports" / "final_report.json"
+    report_path_txt = Path(state["session_dir"]) / "reports" / "final_report.txt"
 
     with open(report_path_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

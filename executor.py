@@ -37,7 +37,7 @@ def execute_code(code: str, state: dict, timeout_sec: int = 60) -> tuple[bool, s
 
     Returns (success, output_or_error, updated_state).
     """
-    session_dir = state["session_dir"]
+    session_dir = Path(state["session_dir"])
 
     state_file = session_dir / "state_input.json"
     state_to_save = {}
@@ -186,6 +186,8 @@ def run_step_with_retry(
             prompt_state.setdefault("test_path", state.get("test_path", ""))
             prompt_state.setdefault("sample_submission_path", state.get("sample_submission_path", ""))
             prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
+            prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
+            prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
 
             code_response = chain.invoke(prompt_state)
 
@@ -210,7 +212,7 @@ def run_step_with_retry(
                     state["previous_code"] = code
                 continue
 
-            code_file = state["session_dir"] / "code" / f"{step_name}.py"
+            code_file = Path(state["session_dir"]) / "code" / f"{step_name}.py"
             with open(code_file, "w", encoding="utf-8") as f:
                 f.write(code)
             if logger:
