@@ -356,11 +356,21 @@ def mini_feedback_loop(
                 f.write(feedback)
 
             # ── Accept or retry ───────────────────────────────────────
+            verifier_approved = "FAIL" not in feedback.upper()
             is_approved = (
                 exec_result["success"]
                 and not state.get("last_error")
-                and "FAIL" not in feedback.upper()
+                and verifier_approved
             )
+            if logger:
+                verdict = "APPROVED" if is_approved else "REJECTED"
+                logger.info(
+                    "%s: [Verifier Verdict] %s (exec=%s, guardrails=%s, verifier=%s)",
+                    step_name, verdict,
+                    "ok" if exec_result["success"] else "fail",
+                    "ok" if not state.get("last_error") else "fail",
+                    "ok" if verifier_approved else "fail",
+                )
             if is_approved:
                 state[f"{step_name}_attempts"] = attempt
                 state[f"{step_name}_success"] = True

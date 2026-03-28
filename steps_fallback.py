@@ -170,8 +170,7 @@ def step2_train_fallback(state: dict) -> dict:
         state["model_path"] = ""
         return state
 
-    train_df_full = pd.read_csv(train_path)
-    train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
+    train_df = pd.read_csv(train_path)
 
     target_col = state.get("target_column")
     if not target_col:
@@ -243,7 +242,7 @@ def step2_train_fallback(state: dict) -> dict:
     ])
 
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42,
+        X, y, test_size=cfg.TRAIN_SAMPLE_FRAC, random_state=42,
     )
     pipeline.fit(X_train, y_train)
 
@@ -305,14 +304,13 @@ def step3_local_eval_fallback(state: dict) -> dict:
     pipeline = joblib.load(model_path_str)
 
     train_path = Path(state.get("train_path", ""))
-    train_df_full = pd.read_csv(train_path)
-    train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
+    train_df = pd.read_csv(train_path)
 
     target_col = state.get("target_column", train_df.columns[-1])
     X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
 
-    _, X_val, _, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+    _, X_val, _, y_val = train_test_split(X, y, test_size=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
 
     pred = pipeline.predict(X_val)
     task_type = state.get("task_type", "classification")

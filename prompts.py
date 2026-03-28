@@ -7,6 +7,8 @@ Architecture:
 
 The pipeline auto-detects task_type (regression vs classification) during EDA.
 All subsequent steps adapt models, metrics, and evaluation accordingly.
+
+train_path always points to the ready-to-use training CSV — steps just load it directly.
 """
 
 # ---------------------------------------------------------------------------
@@ -19,12 +21,11 @@ Context:
 - Train data path: {train_path}
 - Test data path: {test_path}
 - Session directory: {session_dir}
-- Use only {train_sample_pct}% of training data (sample frac={train_sample_frac}, random_state=42)
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
 
 Output a numbered step-by-step plan covering:
-1. How to load and sample the data
+1. Load the train and test data from the provided paths
 2. Which statistics to compute for ALL columns (shape, dtypes, missing values, unique counts)
 3. How to profile numeric columns (min, max, mean, std, correlations)
 4. How to profile categorical/text columns (cardinality, top values)
@@ -61,7 +62,6 @@ Paths:
 - Train data: {train_path}
 - Test data: {test_path}
 - Session directory: {session_dir}
-- Sampling: {train_sample_pct}% of training data (frac={train_sample_frac}, random_state=42)
 
 Previous attempt (if retry):
 - Error: {last_error}
@@ -132,8 +132,7 @@ EDA results from step 1 (available in state):
 Context:
 - Train data is at TRAIN_DATA_PATH
 - Outputs go to SESSION_DIR
-- Use TRAIN_SAMPLE_PCT% of the data (frac=TRAIN_SAMPLE_FRAC, random_state=42)
-- Split 80/20 with random_state=42
+- Train/val split: test_size={train_sample_frac}, random_state=42
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
 
@@ -155,14 +154,14 @@ Choose a model based on task_type:
 Save the ENTIRE Pipeline object (preprocessing + model) to SESSION_DIR/models/pipeline.joblib
 
 Output a numbered step-by-step plan covering:
-1. Data loading and sampling
+1. Load data from TRAIN_DATA_PATH
 2. Target column identification; drop target from X
 3. Splitting numeric vs categorical feature columns (from X, NOT from the full DataFrame)
 4. Splitting categoricals into low-cardinality (≤50 unique) and high-cardinality (>50)
 5. Building the ColumnTransformer: numeric, low-card OneHotEncoder, high-card OrdinalEncoder
 6. Model selection based on task_type and hyperparameters (must train in <2 min)
 7. Assembling the full Pipeline (preprocessor + model)
-8. Train/val split, fitting, and metric reporting
+8. Train/val split (test_size={train_sample_frac}), fitting, and metric reporting
 9. Saving the pipeline to SESSION_DIR/models/pipeline.joblib
 10. State dict keys to update
 
@@ -179,7 +178,7 @@ Plan:
 Paths:
 - Train data: {train_path}
 - Session directory: {session_dir}
-- Sampling: {train_sample_pct}% of data (frac={train_sample_frac}, random_state=42)
+- Train/val split: test_size={train_sample_frac}, random_state=42
 
 EDA results:
 - Numeric columns: {numeric_columns}
@@ -255,13 +254,13 @@ Context:
 Key point:
 - The saved pipeline.joblib contains the FULL sklearn Pipeline (ColumnTransformer + model).
 - You do NOT need to preprocess the data manually — just pass raw DataFrame columns to pipeline.predict().
-- Reproduce the exact data split: TRAIN_SAMPLE_PCT% sample (frac=TRAIN_SAMPLE_FRAC, random_state=42), 80/20 split (random_state=42).
+- Reproduce the exact train/val split: train_test_split(test_size=TRAIN_SAMPLE_FRAC, random_state=42).
 
 Output a numbered step-by-step plan covering:
 1. Load the pipeline from MODEL_PATH
-2. Load and sample the training data (same split as training)
+2. Load the training data from TRAIN_DATA_PATH
 3. Identify target column, separate X and y
-4. Recreate the 80/20 train/val split to get the validation set
+4. Recreate the train/val split (test_size=TRAIN_SAMPLE_FRAC, random_state=42) to get the validation set
 5. Call pipeline.predict(X_val) — NO manual preprocessing
 6. Compute metrics based on task_type:
    - If REGRESSION: RMSE, MAE, R²
@@ -286,7 +285,7 @@ Paths:
 - Session directory: {session_dir}
 - Target column: {target_column}
 - Task type: {task_type}
-- Sampling: {train_sample_pct}% (frac={train_sample_frac}, random_state=42), 80/20 split (random_state=42)
+- Train/val split: test_size={train_sample_frac}, random_state=42
 
 Previous attempt (if retry):
 - Error: {last_error}
@@ -295,7 +294,7 @@ Previous attempt (if retry):
 
 Hard constraints:
 - The saved pipeline.joblib is a FULL sklearn Pipeline — pass RAW DataFrame columns to pipeline.predict(), do NOT manually preprocess.
-- Reproduce the exact same data split as training.
+- Reproduce the exact train/val split: train_test_split(test_size={train_sample_frac}, random_state=42).
 - Save metrics to session_dir/reports/local_metrics.json.
 - Compute metrics based on task_type:
   * If regression: compute rmse (root mean squared error), mae (mean absolute error), r2 (R² score).
