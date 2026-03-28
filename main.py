@@ -38,7 +38,7 @@ from steps_agent import (
 from steps_kaggle import step5_submit, step6_wait_results
 
 
-def run_pipeline() -> dict[str, Any]:
+def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
     """Execute the full agent pipeline and return the final state dict."""
     session_dir = cfg.create_session_dir()
 
@@ -61,50 +61,96 @@ def run_pipeline() -> dict[str, Any]:
         cfg.logger.info("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step1_eda...")
-    state = step1_eda_agent(state)
+    iteration = 0
+    best_state = None
+    best_metric = None
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step2_train...")
-    state = step2_train_agent(state)
+    while iteration < max_iterations:
+        iteration += 1
+        if cfg.logger:
+            cfg.logger.info("=" * 60)
+            cfg.logger.info("Refinement iteration %d/%d", iteration, max_iterations)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step3_eval...")
-    state = step3_local_eval_agent(state)
+        # Если есть предложения от судьи, передаём их в EDA/Train как подсказку
+        if state.get("verification_suggestions"):
+            state["improvement_hint"] = state["verification_suggestions"]
+            if cfg.logger:
+                cfg.logger.info("Using improvement hint: %s", state["improvement_hint"])
+        else:
+            state["improvement_hint"] = ""
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step_verify...")
-    state = step_verify_result_agent(state)
+        # 1. EDA
+        if cfg.logger:
+            cfg.logger.info("Running step1_eda...")
+        state = step1_eda_agent(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step4_submission...")
-    state = step4_submission_agent(state)
+        # 2. Train
+        if cfg.logger:
+            cfg.logger.info("Running step2_train...")
+        state = step2_train_agent(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step5_submit...")
-    state = step5_submit(state)
+        # 3. Eval
+        if cfg.logger:
+            cfg.logger.info("Running step3_eval...")
+        state = step3_local_eval_agent(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step6_wait_results...")
-    state = step6_wait_results(state)
+        # 4. Verify (судья)
+        if cfg.logger:
+            cfg.logger.info("Running step_verify...")
+        state = step_verify_result_agent(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step7_report...")
-    state = step7_report_agent(state)
+        # Сохраняем лучшую модель по метрике (предполагаем, что в local_metrics есть "mse")
+        current_metrics = state.get("local_metrics", {})
+        current_mse = current_metrics.get("mse")
+        if current_mse is not None:
+            if best_metric is None or current_mse < best_metric:
+                best_metric = current_mse
+                best_state = dict(state)  # сохраняем копию
+                if cfg.logger:
+                    cfg.logger.info("New best model found with MSE=%.4f", current_mse)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Pipeline finished. Session: %s", session_dir)
-        cfg.logger.info("Report: %s", state.get("report_path", "N/A"))
+        # Проверяем решение судьи
+        decision = state.get("verification_decision", "NEED_REFINEMENT")
+        if decision == "SUFFICIENT":
+            if cfg.logger:
+                cfg.logger.info("Judge decision: SUFFICIENT – stopping refinement loop.")
+            break
+        else:
+            if cfg.logger:
+                cfg.logger.info("Judge decision: NEED_REFINEMENT – continuing loop.")
+
+    if best_state is not None:
+        if cfg.logger:
+            cfg.logger.info("Using best model from iteration with MSE=%.4f", best_metric)
+        state.update(best_state)  # заменить состояние на лучшее
+    else:
+        if cfg.logger:
+            cfg.logger.warning("No valid iteration, using last state.")
+
+    # if cfg.logger:
+    #     cfg.logger.info("=" * 60)
+    #     cfg.logger.info("Running step4_submission...")
+    # state = step4_submission_agent(state)
+    #
+    # if cfg.logger:
+    #     cfg.logger.info("=" * 60)
+    #     cfg.logger.info("Running step5_submit...")
+    # state = step5_submit(state)
+    #
+    # if cfg.logger:
+    #     cfg.logger.info("=" * 60)
+    #     cfg.logger.info("Running step6_wait_results...")
+    # state = step6_wait_results(state)
+    #
+    # if cfg.logger:
+    #     cfg.logger.info("=" * 60)
+    #     cfg.logger.info("Running step7_report...")
+    # state = step7_report_agent(state)
+    #
+    # if cfg.logger:
+    #     cfg.logger.info("=" * 60)
+    #     cfg.logger.info("Pipeline finished. Session: %s", session_dir)
+    #     cfg.logger.info("Report: %s", state.get("report_path", "N/A"))
 
     return state
 

@@ -7,6 +7,7 @@ Context:
 - Test data path: {test_path}
 - Session directory: {session_dir}
 - Use only {train_sample_pct}% of training data for speed (sample frac={train_sample_frac}, random_state=42)
+- Improvement suggestions from previous evaluation (if any): {improvement_hint}
 
 Requirements:
 1. Load train and test CSV files using pandas
@@ -29,6 +30,7 @@ Context:
 - Session directory: {session_dir}
 - Previous error (if retry): {last_error}
 - Previous code (if retry): {previous_code}
+- Improvement suggestions from previous evaluation (if any): {improvement_hint}
 
 Data constraints:
 - The dataset contains mixed types including text/string columns.
@@ -111,7 +113,6 @@ STEP_VERIFY_PROMPT = """You are a Senior Data Scientist (Judge). Your task is to
 Context:
 - EDA Summary: {eda_summary}
 - Local Metrics (validation MSE and possibly other regression metrics): {local_metrics}
-- Previous Code: {previous_code}
 
 Requirements:
 1. Analyze if the MSE is reasonable for this regression task. Compare with a simple baseline (e.g., predicting the mean target value). If the MSE is high relative to the target variance, it indicates poor performance.
@@ -124,12 +125,10 @@ Requirements:
    - Handling outliers or target transformation (log, sqrt)
    - Any other data-specific insights from EDA
 
-Your output MUST be a JSON-formatted string with:
-- "decision": "SUFFICIENT" or "NEED_REFINEMENT"
-- "reasoning": "Short explanation of your choice, referencing MSE value and potential baseline."
-- "suggestions": "What to improve if REFINEMENT is needed (e.g., 'try extracting day-of-week features from timestamp', 'use LightGBM with hyperparameter tuning', 'apply log transform to target')"
-
-Example: {{"decision": "NEED_REFINEMENT", "reasoning": "Validation MSE is 125.4, while baseline mean prediction MSE is 200, so it's better but still high.", "suggestions": "Add date features (month, day of week), use XGBoost with early stopping, and try log transformation on target."}}
+Your output MUST be a valid JSON object with exactly these three keys: "decision", "reasoning", "suggestions".
+Do NOT include any additional text, comments, or markdown formatting. Output only the JSON object.
+Example:
+{{"decision": "NEED_REFINEMENT", "reasoning": "Validation MSE is 125.4, while baseline mean prediction MSE is 200, so it's better but still high.", "suggestions": "Add date features (month, day of week), use XGBoost with early stopping, and try log transformation on target."}}
 """
 
 STEP7_REPORT_PROMPT = """You are an ML engineer. Write Python code to generate a final report.

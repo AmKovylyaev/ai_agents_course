@@ -103,7 +103,7 @@ def step4_submission_agent(state: dict) -> dict:
 
 
 def step_verify_result_agent(state: dict) -> dict:
-    """LLM as a judge: evaluates metrics and EDA, returns decision."""
+    import re
     import json
     state = dict(state)
     llm = cfg.get_llm()
@@ -112,6 +112,15 @@ def step_verify_result_agent(state: dict) -> dict:
         if cfg.logger:
             cfg.logger.warning("No LLM available for Judge, using fallback")
         return step_verify_fallback(state)
+
+    # codes = []
+    # for step in ["step1_eda", "step2_train", "step3_eval"]:
+    #     code_key = f"{step}_code"
+    #     if code_key in state and state[code_key]:
+    #         codes.append(state[code_key])
+    # previous_code = "\n\n".join(codes) if codes else ""
+    # if previous_code:
+    #     previous_code = previous_code[:500] + "..." if len(previous_code) > 500 else previous_code
 
     eda_summary = state.get("eda_report", "No EDA summary available.")
     if isinstance(eda_summary, str):
@@ -125,48 +134,71 @@ def step_verify_result_agent(state: dict) -> dict:
     else:
         metrics_str = "{}"
 
-    previous_code = state.get("previous_code", "")
-    if previous_code and isinstance(previous_code, str):
-        previous_code = previous_code[:500] + "..." if len(previous_code) > 500 else previous_code
-    else:
-        previous_code = ""
-
     if cfg.logger:
-        cfg.logger.info(f"Judge input sizes: eda={len(eda_summary)}, metrics={len(metrics_str)}, code={len(previous_code)}")
+        cfg.logger.info(f"Judge input sizes: eda={len(eda_summary)}, metrics={len(metrics_str)}")
 
     prompt_data = {
         "eda_summary": eda_summary,
         "local_metrics": metrics_str,
-        "previous_code": previous_code,
+        # "previous_code": previous_code,
     }
-
-    from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.output_parsers import StrOutputParser
-    prompt = ChatPromptTemplate.from_messages([("human", STEP_VERIFY_PROMPT)])
-    chain = prompt | llm | StrOutputParser()
-
-    try:
-        response = chain.invoke(prompt_data)
-        if "```json" in response:
-            response = response.split("```json")[1].split("```")[0]
-        elif "```" in response:
-            response = response.split("```")[1].split("```")[0]
-        result = json.loads(response.strip())
-        state["verification_decision"] = result.get("decision", "NEED_REFINEMENT")
-        state["verification_reasoning"] = result.get("reasoning", "")
-        state["verification_suggestions"] = result.get("suggestions", "")
-        state["verification_raw"] = response
-    except Exception as e:
-        if cfg.logger:
-            cfg.logger.error(f"Judge LLM parsing failed: {e}")
-        return step_verify_fallback(state)
-
     if cfg.logger:
-        cfg.logger.info("Judge decision: %s", state["verification_decision"])
-        if state["verification_decision"] == "NEED_REFINEMENT":
-            cfg.logger.info("Suggestions: %s", state["verification_suggestions"])
+        cfg.logger.info(f"eda summary: {eda_summary}")
+        cfg.logger.info(f"local metrics: {local_metrics}")
+    chain = create_step_chain(STEP_VERIFY_PROMPT, llm)
+    max_attempts: int = 3
 
-    return state
+    attempt = 0
+    while attempt < max_attempts:
+        attempt += 1
+        if cfg.logger:
+            cfg.logger.info(f"Judge attempt {attempt}/{max_attempts}")
+        try:
+            response = chain.invoke(prompt_data)
+            if len(response) == 0:
+                attempt -= 1
+            if cfg.logger:
+                cfg.logger.info(f"Judge raw response:\n{response}")
+
+            # Пытаемся извлечь JSON
+            def extract_json(text: str) -> dict:
+                text = text.strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+                    if match:
+                        try:
+                            return json.loads(match.group(0))
+                        except:
+                            pass
+                    raise ValueError("No valid JSON found in LLM response")
+
+            result = extract_json(response)
+            state["verification_decision"] = result.get("decision", "NEED_REFINEMENT")
+            state["verification_reasoning"] = result.get("reasoning", "")
+            state["verification_suggestions"] = result.get("suggestions", "")
+            state["verification_raw"] = response
+            if cfg.logger:
+                cfg.logger.info("Judge decision: %s", state["verification_decision"])
+                if state["verification_decision"] == "NEED_REFINEMENT":
+                    cfg.logger.info("Suggestions: %s", state["verification_suggestions"])
+            return state
+
+        except Exception as e:
+            if cfg.logger:
+                cfg.logger.error(f"Judge attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                continue
+
+    # Если все попытки провалились
+    if cfg.logger:
+        cfg.logger.error(f"Judge failed after {max_attempts} attempts, using fallback")
+    return step_verify_fallback(state)
 
 
 def step7_report_agent(state: dict) -> dict:
