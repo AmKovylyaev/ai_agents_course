@@ -4,21 +4,30 @@ from __future__ import annotations
 
 import config as cfg
 from executor import create_step_chain, run_step_with_retry
+from mini_feedback_loop import mini_feedback_loop
 from prompts import (
+    STEP1_PLANNER_PROMPT,
     STEP1_EDA_PROMPT,
+    STEP1_VERIFIER_PROMPT,
+    STEP2_PLANNER_PROMPT,
     STEP2_TRAIN_PROMPT,
+    STEP2_VERIFIER_PROMPT,
+    STEP3_PLANNER_PROMPT,
     STEP3_EVAL_PROMPT,
+    STEP3_VERIFIER_PROMPT,
+    STEP4_PLANNER_PROMPT,
     STEP4_SUBMISSION_PROMPT,
-    STEP_VERIFY_PROMPT,
+    STEP4_VERIFIER_PROMPT,
     STEP7_REPORT_PROMPT,
+    STEP_JUDGE_PROMPT
 )
 from steps_fallback import (
     step1_eda_fallback,
     step2_train_fallback,
     step3_local_eval_fallback,
     step4_submission_fallback,
-    step_verify_fallback,
     step7_report_fallback,
+    step_judge_fallback
 )
 
 
@@ -32,8 +41,16 @@ def step1_eda_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback EDA")
         return step1_eda_fallback(state)
 
-    chain = create_step_chain(STEP1_EDA_PROMPT, llm)
-    state, success = run_step_with_retry("step1_eda", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step1_eda",
+        STEP1_PLANNER_PROMPT,
+        STEP1_EDA_PROMPT,
+        STEP1_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:
@@ -52,8 +69,16 @@ def step2_train_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback train")
         return step2_train_fallback(state)
 
-    chain = create_step_chain(STEP2_TRAIN_PROMPT, llm)
-    state, success = run_step_with_retry("step2_train", chain, state, max_attempts=3, timeout_sec=120)
+    state, success = mini_feedback_loop(
+        "step2_train",
+        STEP2_PLANNER_PROMPT,
+        STEP2_TRAIN_PROMPT,
+        STEP2_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=360,
+    )
 
     if not success:
         if cfg.logger:
@@ -72,8 +97,16 @@ def step3_local_eval_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback eval")
         return step3_local_eval_fallback(state)
 
-    chain = create_step_chain(STEP3_EVAL_PROMPT, llm)
-    state, success = run_step_with_retry("step3_eval", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step3_eval",
+        STEP3_PLANNER_PROMPT,
+        STEP3_EVAL_PROMPT,
+        STEP3_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:
@@ -92,8 +125,16 @@ def step4_submission_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback submission")
         return step4_submission_fallback(state)
 
-    chain = create_step_chain(STEP4_SUBMISSION_PROMPT, llm)
-    state, success = run_step_with_retry("step4_submission", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step4_submission",
+        STEP4_PLANNER_PROMPT,
+        STEP4_SUBMISSION_PROMPT,
+        STEP4_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:
@@ -102,7 +143,27 @@ def step4_submission_agent(state: dict) -> dict:
     return state
 
 
-def step_verify_result_agent(state: dict) -> dict:
+def step7_report_agent(state: dict) -> dict:
+    """Step 7: LLM-generated final report."""
+    state = dict(state)
+    llm = cfg.get_llm()
+
+    if not llm:
+        if cfg.logger:
+            cfg.logger.warning("No LLM available, using fallback report")
+        return step7_report_fallback(state)
+
+    chain = create_step_chain(STEP7_REPORT_PROMPT, llm)
+    state, success = run_step_with_retry("step7_report", chain, state, max_attempts=3, timeout_sec=60)
+
+    if not success:
+        if cfg.logger:
+            cfg.logger.warning("Report agent failed, using fallback")
+        return step7_report_fallback(state)
+    return state
+
+
+def step_judge_result_agent(state: dict) -> dict:
     import re
     import json
     state = dict(state)
@@ -111,22 +172,22 @@ def step_verify_result_agent(state: dict) -> dict:
     if not llm:
         if cfg.logger:
             cfg.logger.warning("No LLM available for Judge, using fallback")
-        return step_verify_fallback(state)
+        return step_judge_fallback(state)
 
-    # codes = []
-    # for step in ["step1_eda", "step2_train", "step3_eval"]:
-    #     code_key = f"{step}_code"
-    #     if code_key in state and state[code_key]:
-    #         codes.append(state[code_key])
-    # previous_code = "\n\n".join(codes) if codes else ""
+    codes = []
+    for step in ["step1_eda", "step2_train", "step3_eval"]:
+        code_key = f"{step}_code"
+        if code_key in state and state[code_key]:
+            codes.append(state[code_key])
+    previous_code = "\n\n".join(codes) if codes else ""
     # if previous_code:
     #     previous_code = previous_code[:500] + "..." if len(previous_code) > 500 else previous_code
 
-    eda_summary = state.get("eda_report", "No EDA summary available.")
-    if isinstance(eda_summary, str):
-        eda_summary = eda_summary[:1500]
-    else:
-        eda_summary = "No EDA summary."
+    # eda_summary = state.get("eda_report", "No EDA summary available.")
+    # if isinstance(eda_summary, str):
+    #     eda_summary = eda_summary[:1500]
+    # else:
+    #     eda_summary = "No EDA summary."
 
     local_metrics = state.get("local_metrics", {})
     if local_metrics:
@@ -134,18 +195,18 @@ def step_verify_result_agent(state: dict) -> dict:
     else:
         metrics_str = "{}"
 
-    if cfg.logger:
-        cfg.logger.info(f"Judge input sizes: eda={len(eda_summary)}, metrics={len(metrics_str)}")
+    # if cfg.logger:
+    #     cfg.logger.info(f"Judge input sizes: eda={len(eda_summary)}, metrics={len(metrics_str)}")
 
     prompt_data = {
-        "eda_summary": eda_summary,
         "local_metrics": metrics_str,
-        # "previous_code": previous_code,
+        "previous_code": previous_code,
     }
     if cfg.logger:
-        cfg.logger.info(f"eda summary: {eda_summary}")
+        # cfg.logger.info(f"eda summary: {eda_summary}")
+        cfg.logger.info(f"previous code: {previous_code}")
         cfg.logger.info(f"local metrics: {local_metrics}")
-    chain = create_step_chain(STEP_VERIFY_PROMPT, llm)
+    chain = create_step_chain(STEP_JUDGE_PROMPT, llm)
     max_attempts: int = 3
 
     attempt = 0
@@ -198,24 +259,5 @@ def step_verify_result_agent(state: dict) -> dict:
     # Если все попытки провалились
     if cfg.logger:
         cfg.logger.error(f"Judge failed after {max_attempts} attempts, using fallback")
-    return step_verify_fallback(state)
+    return step_judge_fallback(state)
 
-
-def step7_report_agent(state: dict) -> dict:
-    """Step 7: LLM-generated final report."""
-    state = dict(state)
-    llm = cfg.get_llm()
-
-    if not llm:
-        if cfg.logger:
-            cfg.logger.warning("No LLM available, using fallback report")
-        return step7_report_fallback(state)
-
-    chain = create_step_chain(STEP7_REPORT_PROMPT, llm)
-    state, success = run_step_with_retry("step7_report", chain, state, max_attempts=3, timeout_sec=60)
-
-    if not success:
-        if cfg.logger:
-            cfg.logger.warning("Report agent failed, using fallback")
-        return step7_report_fallback(state)
-    return state

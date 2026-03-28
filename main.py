@@ -32,13 +32,13 @@ from steps_agent import (
     step2_train_agent,
     step3_local_eval_agent,
     step4_submission_agent,
-    step_verify_result_agent,
+    step_judge_result_agent,
     step7_report_agent,
 )
 from steps_kaggle import step5_submit, step6_wait_results
 
 
-def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
+def run_pipeline() -> dict[str, Any]:
     """Execute the full agent pipeline and return the final state dict."""
     session_dir = cfg.create_session_dir()
 
@@ -47,20 +47,31 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         cfg.logger.info("Session directory: %s", session_dir)
 
     state: dict[str, Any] = {
-        "session_dir": session_dir,
-        "code_dir": session_dir / "code",
-        "models_dir": session_dir / "models",
-        "reports_dir": session_dir / "reports",
+        # directories
+        "session_dir": str(session_dir),
+        "code_dir": str(session_dir / "code"),
+        "models_dir": str(session_dir / "models"),
+        "reports_dir": str(session_dir / "reports"),
+        "plans_dir": str(session_dir / "plans"),
+        "feedback_dir": str(session_dir / "feedback"),
         "data_dir": str(cfg.DATA_DIR),
+        # data paths
         "train_path": str(cfg.DATA_DIR / cfg.TRAIN_FILE),
         "test_path": str(cfg.DATA_DIR / cfg.TEST_FILE),
         "sample_submission_path": str(cfg.DATA_DIR / cfg.SAMPLE_SUBMISSION_FILE),
+        # sampling config
+        "train_sample_frac": cfg.TRAIN_SAMPLE_FRAC,
+        "train_sample_pct": cfg.TRAIN_SAMPLE_PCT,
+        # populated by later steps (defaults to conventional locations)
+        "model_path": str(session_dir / "models" / "pipeline.joblib"),
+        "submission_path": str(session_dir / "submission.csv"),
+        "target_column": "",
     }
 
     if cfg.logger:
         cfg.logger.info("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
-
+    max_iterations = 3
     iteration = 0
     best_state = None
     best_metric = None
@@ -79,25 +90,35 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         else:
             state["improvement_hint"] = ""
 
-        # 1. EDA
+        # -- Step 1: EDA --------------------------------------------------------
         if cfg.logger:
+            cfg.logger.info("=" * 60)
             cfg.logger.info("Running step1_eda...")
         state = step1_eda_agent(state)
 
-        # 2. Train
+        # -- Step 2: Train ------------------------------------------------------
         if cfg.logger:
+            cfg.logger.info("=" * 60)
             cfg.logger.info("Running step2_train...")
         state = step2_train_agent(state)
 
-        # 3. Eval
+        # -- Step 3: Eval -------------------------------------------------------
         if cfg.logger:
+            cfg.logger.info("=" * 60)
             cfg.logger.info("Running step3_eval...")
         state = step3_local_eval_agent(state)
 
-        # 4. Verify (судья)
+        local_metrics = state.get("local_metrics", {})
+        if cfg.logger and local_metrics:
+            cfg.logger.info("Local evaluation metrics:")
+            for metric_name, metric_value in local_metrics.items():
+                if isinstance(metric_value, float):
+                    cfg.logger.info("  %s: %.4f", metric_name, metric_value)
+                else:
+                    cfg.logger.info("  %s: %s", metric_name, metric_value)
         if cfg.logger:
             cfg.logger.info("Running step_verify...")
-        state = step_verify_result_agent(state)
+        state = step_judge_result_agent(state)
 
         # Сохраняем лучшую модель по метрике (предполагаем, что в local_metrics есть "mse")
         current_metrics = state.get("local_metrics", {})
@@ -127,30 +148,34 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         if cfg.logger:
             cfg.logger.warning("No valid iteration, using last state.")
 
+    # # -- Step 4: Submission -------------------------------------------------
     # if cfg.logger:
     #     cfg.logger.info("=" * 60)
     #     cfg.logger.info("Running step4_submission...")
     # state = step4_submission_agent(state)
     #
+    # # -- Step 5: Submit to Kaggle -------------------------------------------
     # if cfg.logger:
     #     cfg.logger.info("=" * 60)
     #     cfg.logger.info("Running step5_submit...")
     # state = step5_submit(state)
     #
+    # # -- Step 6: Wait / confirm ---------------------------------------------
     # if cfg.logger:
     #     cfg.logger.info("=" * 60)
     #     cfg.logger.info("Running step6_wait_results...")
     # state = step6_wait_results(state)
     #
+    # # -- Step 7: Report -----------------------------------------------------
     # if cfg.logger:
     #     cfg.logger.info("=" * 60)
     #     cfg.logger.info("Running step7_report...")
     # state = step7_report_agent(state)
-    #
-    # if cfg.logger:
-    #     cfg.logger.info("=" * 60)
-    #     cfg.logger.info("Pipeline finished. Session: %s", session_dir)
-    #     cfg.logger.info("Report: %s", state.get("report_path", "N/A"))
+
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Pipeline finished. Session: %s", session_dir)
+        cfg.logger.info("Report: %s", state.get("report_path", "N/A"))
 
     return state
 

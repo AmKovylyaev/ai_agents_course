@@ -66,7 +66,8 @@ from pathlib import Path
 with open("{state_file}", "r", encoding="utf-8") as f:
     state = json.load(f)
 
-for key in ["session_dir", "code_dir", "models_dir", "reports_dir", "data_dir",
+for key in ["session_dir", "code_dir", "models_dir", "reports_dir", "plans_dir",
+            "feedback_dir", "data_dir",
             "train_path", "test_path", "sample_submission_path", "model_path", "submission_path"]:
     if key in state and isinstance(state[key], str):
         state[key] = Path(state[key])
@@ -100,12 +101,17 @@ print("STATE_SAVED_SUCCESSFULLY")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(wrapped_code)
 
+        env = os.environ.copy()
+        project_dir = str(cfg.SCRIPT_DIR)
+        env["PYTHONPATH"] = project_dir + os.pathsep + env.get("PYTHONPATH", "")
+
         result = subprocess.run(
             ["python3", path],
             capture_output=True,
             text=True,
             timeout=timeout_sec,
             cwd=str(session_dir),
+            env=env,
         )
 
         if result.returncode == 0:
@@ -185,6 +191,7 @@ def run_step_with_retry(
             prompt_state.setdefault("train_path", state.get("train_path", ""))
             prompt_state.setdefault("test_path", state.get("test_path", ""))
             prompt_state.setdefault("sample_submission_path", state.get("sample_submission_path", ""))
+            prompt_state.setdefault("improvement_hint", state.get("improvement_hint", ""))
             prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
             prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
             prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
@@ -209,6 +216,18 @@ def run_step_with_retry(
                 errors.append(validation_msg)
                 if attempts < max_attempts:
                     state["last_error"] = validation_msg
+                    state["previous_code"] = code
+                continue
+
+            from guardrails import check_code_safety
+            safety = check_code_safety(code)
+            if not safety:
+                error_msg = f"Code rejected by safety guardrail: {safety.message}"
+                if logger:
+                    logger.warning("%s: %s", step_name, error_msg)
+                errors.append(error_msg)
+                if attempts < max_attempts:
+                    state["last_error"] = error_msg
                     state["previous_code"] = code
                 continue
 
