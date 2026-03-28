@@ -66,7 +66,8 @@ from pathlib import Path
 with open("{state_file}", "r", encoding="utf-8") as f:
     state = json.load(f)
 
-for key in ["session_dir", "code_dir", "models_dir", "reports_dir", "data_dir",
+for key in ["session_dir", "code_dir", "models_dir", "reports_dir", "plans_dir",
+            "feedback_dir", "data_dir",
             "train_path", "test_path", "sample_submission_path", "model_path", "submission_path"]:
     if key in state and isinstance(state[key], str):
         state[key] = Path(state[key])
@@ -214,6 +215,18 @@ def run_step_with_retry(
                 errors.append(validation_msg)
                 if attempts < max_attempts:
                     state["last_error"] = validation_msg
+                    state["previous_code"] = code
+                continue
+
+            from guardrails import check_code_safety
+            safety = check_code_safety(code)
+            if not safety:
+                error_msg = f"Code rejected by safety guardrail: {safety.message}"
+                if logger:
+                    logger.warning("%s: %s", step_name, error_msg)
+                errors.append(error_msg)
+                if attempts < max_attempts:
+                    state["last_error"] = error_msg
                     state["previous_code"] = code
                 continue
 

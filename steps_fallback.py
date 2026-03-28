@@ -50,8 +50,16 @@ def step1_eda_fallback(state: dict) -> dict:
             .select_dtypes(include=["object", "category"]).columns
         )
         n_classes = int(train_df[target_col].nunique())
+        is_numeric_target = train_df[target_col].dtype.kind in ("i", "f")
+        unique_ratio = n_classes / len(train_df) if len(train_df) > 0 else 0
+        task_type = (
+            "regression"
+            if is_numeric_target and (n_classes > 20 or unique_ratio > 0.05)
+            else "classification"
+        )
 
-        report_parts.append(f"Target: {target_col} ({n_classes} classes)")
+        report_parts.append(f"Target: {target_col} ({n_classes} unique values)")
+        report_parts.append(f"Task type: {task_type}")
         report_parts.append(f"Numeric features ({len(numeric_cols)}): {numeric_cols}")
         report_parts.append(f"Categorical features ({len(categorical_cols)}): {categorical_cols}")
 
@@ -61,6 +69,7 @@ def step1_eda_fallback(state: dict) -> dict:
         state["numeric_columns"] = numeric_cols
         state["categorical_columns"] = categorical_cols
         state["n_classes"] = n_classes
+        state["task_type"] = task_type
         state["columns"] = list(train_df.columns)
         state["missing_values"] = train_df.isnull().sum().to_dict()
     else:
@@ -79,9 +88,55 @@ def step1_eda_fallback(state: dict) -> dict:
     eda_text = "\n\n".join(report_parts) if report_parts else "No data loaded."
     state["eda_report"] = eda_text
 
-    eda_file = Path(state["session_dir"]) / "reports" / "eda_summary.txt"
+    reports_dir = Path(state["session_dir"]) / "reports"
+    eda_file = reports_dir / "eda_summary.txt"
     with open(eda_file, "w", encoding="utf-8") as f:
         f.write(eda_text)
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        if train_path.exists():
+            train_df = pd.read_csv(train_path)
+
+            if target_col and target_col in train_df.columns:
+                fig, ax = plt.subplots(figsize=(8, 4))
+                train_df[target_col].value_counts().plot.bar(ax=ax)
+                ax.set_title("Target Distribution")
+                ax.set_ylabel("Count")
+                fig.tight_layout()
+                fig.savefig(reports_dir / "target_distribution.png", dpi=100)
+                plt.close(fig)
+
+            if numeric_cols:
+                fig, ax = plt.subplots(figsize=(10, 8))
+                corr = train_df[numeric_cols].corr()
+                im = ax.imshow(corr, aspect="auto", cmap="coolwarm", vmin=-1, vmax=1)
+                ax.set_xticks(range(len(numeric_cols)))
+                ax.set_yticks(range(len(numeric_cols)))
+                ax.set_xticklabels(numeric_cols, rotation=45, ha="right", fontsize=7)
+                ax.set_yticklabels(numeric_cols, fontsize=7)
+                ax.set_title("Feature Correlation Heatmap")
+                fig.colorbar(im, ax=ax)
+                fig.tight_layout()
+                fig.savefig(reports_dir / "correlation_heatmap.png", dpi=100)
+                plt.close(fig)
+
+            missing = train_df.isnull().sum()
+            missing = missing[missing > 0]
+            if not missing.empty:
+                fig, ax = plt.subplots(figsize=(8, 4))
+                missing.plot.bar(ax=ax)
+                ax.set_title("Missing Values per Column")
+                ax.set_ylabel("Count")
+                fig.tight_layout()
+                fig.savefig(reports_dir / "missing_values.png", dpi=100)
+                plt.close(fig)
+    except ImportError:
+        if cfg.logger:
+            cfg.logger.warning("matplotlib not available; skipping EDA plots.")
 
     state["step1_eda_success"] = True
     if cfg.logger:
@@ -97,7 +152,7 @@ def step2_train_fallback(state: dict) -> dict:
         import pandas as pd
         import joblib
         from sklearn.compose import ColumnTransformer
-        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
         from sklearn.impute import SimpleImputer
         from sklearn.model_selection import train_test_split
         from sklearn.pipeline import Pipeline
@@ -127,8 +182,9 @@ def step2_train_fallback(state: dict) -> dict:
         if not target_col:
             target_col = train_df.columns[-1]
 
+    task_type = state.get("task_type", "classification")
     if cfg.logger:
-        cfg.logger.info("Using target column: %s", target_col)
+        cfg.logger.info("Using target column: %s (task_type=%s)", target_col, task_type)
 
     X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
@@ -176,9 +232,14 @@ def step2_train_fallback(state: dict) -> dict:
 
     preprocessor = ColumnTransformer(transformers)
 
+    if task_type == "regression":
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+    else:
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+
     pipeline = Pipeline([
         ("preprocessor", preprocessor),
-        ("classifier", RandomForestClassifier(n_estimators=100, random_state=42)),
+        ("model", model),
     ])
 
     X_train, X_val, y_train, y_val = train_test_split(
@@ -195,14 +256,28 @@ def step2_train_fallback(state: dict) -> dict:
 
     state["step2_train_success"] = True
     if cfg.logger:
-        from sklearn.metrics import accuracy_score, f1_score
-
+        import numpy as np
         y_pred = pipeline.predict(X_val)
-        acc = accuracy_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred, average="macro", zero_division=0)
-        cfg.logger.info(
-            "Step 2 train (fallback): accuracy=%.4f, f1_macro=%.4f", acc, f1,
-        )
+        if task_type == "regression":
+            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+            rmse = float(np.sqrt(mean_squared_error(y_val, y_pred)))
+            mae = float(mean_absolute_error(y_val, y_pred))
+            r2 = float(r2_score(y_val, y_pred))
+            cfg.logger.info(
+                "Step 2 train (fallback): rmse=%.4f, mae=%.4f, r2=%.4f", rmse, mae, r2,
+            )
+        else:
+            from sklearn.metrics import (
+                accuracy_score, precision_score, recall_score, f1_score,
+            )
+            acc = accuracy_score(y_val, y_pred)
+            prec = precision_score(y_val, y_pred, average="macro", zero_division=0)
+            rec = recall_score(y_val, y_pred, average="macro", zero_division=0)
+            f1 = f1_score(y_val, y_pred, average="macro", zero_division=0)
+            cfg.logger.info(
+                "Step 2 train (fallback): accuracy=%.4f, precision=%.4f, recall=%.4f, f1=%.4f",
+                acc, prec, rec, f1,
+            )
         cfg.logger.info("Pipeline saved to %s", model_path)
     return state
 
@@ -219,9 +294,9 @@ def step3_local_eval_fallback(state: dict) -> dict:
         return state
 
     try:
+        import numpy as np
         import pandas as pd
         import joblib
-        from sklearn.metrics import accuracy_score, f1_score
         from sklearn.model_selection import train_test_split
     except ImportError:
         state["local_metrics"] = {}
@@ -240,13 +315,27 @@ def step3_local_eval_fallback(state: dict) -> dict:
     _, X_val, _, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
     pred = pipeline.predict(X_val)
-    acc = accuracy_score(y_val, pred)
-    try:
-        f1 = f1_score(y_val, pred, average="macro", zero_division=0)
-    except Exception:
-        f1 = 0.0
+    task_type = state.get("task_type", "classification")
 
-    state["local_metrics"] = {"accuracy": acc, "f1_macro": f1}
+    if task_type == "regression":
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        rmse = float(np.sqrt(mean_squared_error(y_val, pred)))
+        mae = float(mean_absolute_error(y_val, pred))
+        r2 = float(r2_score(y_val, pred))
+        state["local_metrics"] = {"rmse": rmse, "mae": mae, "r2": r2}
+        log_msg = f"Step 3 local eval (fallback): rmse={rmse:.4f}, mae={mae:.4f}, r2={r2:.4f}"
+    else:
+        from sklearn.metrics import (
+            accuracy_score, precision_score, recall_score, f1_score,
+        )
+        acc = accuracy_score(y_val, pred)
+        prec = precision_score(y_val, pred, average="macro", zero_division=0)
+        rec = recall_score(y_val, pred, average="macro", zero_division=0)
+        f1 = f1_score(y_val, pred, average="macro", zero_division=0)
+        state["local_metrics"] = {
+            "accuracy": acc, "precision": prec, "recall": rec, "f1": f1,
+        }
+        log_msg = f"Step 3 local eval (fallback): accuracy={acc:.4f}, precision={prec:.4f}, recall={rec:.4f}, f1={f1:.4f}"
 
     metrics_file = Path(state["session_dir"]) / "reports" / "local_metrics.json"
     with open(metrics_file, "w") as f:
@@ -254,7 +343,7 @@ def step3_local_eval_fallback(state: dict) -> dict:
 
     state["step3_eval_success"] = True
     if cfg.logger:
-        cfg.logger.info("Step 3 local eval (fallback): accuracy=%.4f, f1_macro=%.4f", acc, f1)
+        cfg.logger.info(log_msg)
     return state
 
 

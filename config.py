@@ -45,6 +45,10 @@ def setup_logging(session_dir: Path) -> None:
         ],
         force=True,
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
     logger = logging.getLogger(__name__)
     logger.info("Logging to %s", log_file)
 
@@ -55,9 +59,8 @@ def create_session_dir() -> Path:
     session_dir = ARTIFACTS_DIR / "sessions" / timestamp
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    (session_dir / "code").mkdir(exist_ok=True)
-    (session_dir / "models").mkdir(exist_ok=True)
-    (session_dir / "reports").mkdir(exist_ok=True)
+    for sub in ("code", "models", "reports", "plans", "feedback"):
+        (session_dir / sub).mkdir(exist_ok=True)
 
     return session_dir
 

@@ -46,30 +46,44 @@ def run_pipeline() -> dict[str, Any]:
         cfg.logger.info("Session directory: %s", session_dir)
 
     state: dict[str, Any] = {
-        "session_dir": session_dir,
-        "code_dir": session_dir / "code",
-        "models_dir": session_dir / "models",
-        "reports_dir": session_dir / "reports",
+        # directories
+        "session_dir": str(session_dir),
+        "code_dir": str(session_dir / "code"),
+        "models_dir": str(session_dir / "models"),
+        "reports_dir": str(session_dir / "reports"),
+        "plans_dir": str(session_dir / "plans"),
+        "feedback_dir": str(session_dir / "feedback"),
         "data_dir": str(cfg.DATA_DIR),
+        # data paths
         "train_path": str(cfg.DATA_DIR / cfg.TRAIN_FILE),
         "test_path": str(cfg.DATA_DIR / cfg.TEST_FILE),
         "sample_submission_path": str(cfg.DATA_DIR / cfg.SAMPLE_SUBMISSION_FILE),
+        # sampling config
+        "train_sample_frac": cfg.TRAIN_SAMPLE_FRAC,
+        "train_sample_pct": cfg.TRAIN_SAMPLE_PCT,
+        # populated by later steps (defaults to conventional locations)
+        "model_path": str(session_dir / "models" / "pipeline.joblib"),
+        "submission_path": str(session_dir / "submission.csv"),
+        "target_column": "",
     }
 
     if cfg.logger:
         cfg.logger.info("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
 
+    # -- Step 1: EDA --------------------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step1_eda...")
     state = step1_eda_agent(state)
 
+    # -- Step 2: Train ------------------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step2_train...")
     state = step2_train_agent(state)
 
+    # -- Step 3: Eval -------------------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step3_eval...")
@@ -83,24 +97,26 @@ def run_pipeline() -> dict[str, Any]:
                 cfg.logger.info("  %s: %.4f", metric_name, metric_value)
             else:
                 cfg.logger.info("  %s: %s", metric_name, metric_value)
-    elif cfg.logger:
-        cfg.logger.warning("No local metrics available after step3")
 
+    # -- Step 4: Submission -------------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step4_submission...")
     state = step4_submission_agent(state)
 
+    # -- Step 5: Submit to Kaggle -------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step5_submit...")
     state = step5_submit(state)
 
+    # -- Step 6: Wait / confirm ---------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step6_wait_results...")
     state = step6_wait_results(state)
 
+    # -- Step 7: Report -----------------------------------------------------
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step7_report...")
