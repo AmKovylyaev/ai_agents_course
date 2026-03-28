@@ -75,6 +75,17 @@ def run_pipeline() -> dict[str, Any]:
         cfg.logger.info("Running step3_eval...")
     state = step3_local_eval_agent(state)
 
+    local_metrics = state.get("local_metrics", {})
+    if cfg.logger and local_metrics:
+        cfg.logger.info("Local evaluation metrics:")
+        for metric_name, metric_value in local_metrics.items():
+            if isinstance(metric_value, float):
+                cfg.logger.info("  %s: %.4f", metric_name, metric_value)
+            else:
+                cfg.logger.info("  %s: %s", metric_name, metric_value)
+    elif cfg.logger:
+        cfg.logger.warning("No local metrics available after step3")
+
     if cfg.logger:
         cfg.logger.info("=" * 60)
         cfg.logger.info("Running step4_submission...")

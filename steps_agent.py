@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import config as cfg
 from executor import create_step_chain, run_step_with_retry
+from mini_feedback_loop import mini_feedback_loop
 from prompts import (
+    STEP1_PLANNER_PROMPT,
     STEP1_EDA_PROMPT,
+    STEP1_VERIFIER_PROMPT,
+    STEP2_PLANNER_PROMPT,
     STEP2_TRAIN_PROMPT,
+    STEP2_VERIFIER_PROMPT,
+    STEP3_PLANNER_PROMPT,
     STEP3_EVAL_PROMPT,
+    STEP3_VERIFIER_PROMPT,
+    STEP4_PLANNER_PROMPT,
     STEP4_SUBMISSION_PROMPT,
+    STEP4_VERIFIER_PROMPT,
     STEP7_REPORT_PROMPT,
 )
 from steps_fallback import (
@@ -30,8 +39,16 @@ def step1_eda_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback EDA")
         return step1_eda_fallback(state)
 
-    chain = create_step_chain(STEP1_EDA_PROMPT, llm)
-    state, success = run_step_with_retry("step1_eda", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step1_eda",
+        STEP1_PLANNER_PROMPT,
+        STEP1_EDA_PROMPT,
+        STEP1_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:
@@ -50,8 +67,16 @@ def step2_train_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback train")
         return step2_train_fallback(state)
 
-    chain = create_step_chain(STEP2_TRAIN_PROMPT, llm)
-    state, success = run_step_with_retry("step2_train", chain, state, max_attempts=3, timeout_sec=120)
+    state, success = mini_feedback_loop(
+        "step2_train",
+        STEP2_PLANNER_PROMPT,
+        STEP2_TRAIN_PROMPT,
+        STEP2_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=360,
+    )
 
     if not success:
         if cfg.logger:
@@ -70,8 +95,16 @@ def step3_local_eval_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback eval")
         return step3_local_eval_fallback(state)
 
-    chain = create_step_chain(STEP3_EVAL_PROMPT, llm)
-    state, success = run_step_with_retry("step3_eval", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step3_eval",
+        STEP3_PLANNER_PROMPT,
+        STEP3_EVAL_PROMPT,
+        STEP3_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:
@@ -90,8 +123,16 @@ def step4_submission_agent(state: dict) -> dict:
             cfg.logger.warning("No LLM available, using fallback submission")
         return step4_submission_fallback(state)
 
-    chain = create_step_chain(STEP4_SUBMISSION_PROMPT, llm)
-    state, success = run_step_with_retry("step4_submission", chain, state, max_attempts=3, timeout_sec=60)
+    state, success = mini_feedback_loop(
+        "step4_submission",
+        STEP4_PLANNER_PROMPT,
+        STEP4_SUBMISSION_PROMPT,
+        STEP4_VERIFIER_PROMPT,
+        state,
+        llm,
+        max_attempts=3,
+        timeout_sec=120,
+    )
 
     if not success:
         if cfg.logger:

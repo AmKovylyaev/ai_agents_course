@@ -12,7 +12,7 @@ from typing import Any
 try:
     from _model_config import model_llm, model_embedding
 except ImportError:
-    model_llm = "z-ai/glm-4.7-flash"
+    model_llm = "openai/gpt-oss-120b"
     model_embedding = "google/gemini-embedding-001"
 
 SCRIPT_DIR = Path(__file__).resolve().parent

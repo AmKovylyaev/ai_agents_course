@@ -9,7 +9,7 @@ import config as cfg
 
 
 def step1_eda_fallback(state: dict) -> dict:
-    """Fallback EDA: basic stats, no LLM."""
+    """Fallback EDA: profile all columns, no LLM."""
     state = dict(state)
     train_path = Path(state.get("train_path", ""))
     test_path = Path(state.get("test_path", ""))
@@ -28,10 +28,41 @@ def step1_eda_fallback(state: dict) -> dict:
         train_df = pd.read_csv(train_path)
         report_parts.append(f"Train: {len(train_df)} rows, {len(train_df.columns)} columns")
         report_parts.append(f"Columns: {list(train_df.columns)}")
+        report_parts.append(f"Dtypes:\n{train_df.dtypes.to_string()}")
         report_parts.append(str(train_df.describe()))
         report_parts.append(f"Missing: {train_df.isnull().sum().to_dict()}")
+
+        target_candidates = ["target", "label", "y"]
+        target_col = None
+        for c in target_candidates:
+            if c in train_df.columns:
+                target_col = c
+                break
+        if target_col is None:
+            target_col = train_df.columns[-1]
+
+        numeric_cols = list(
+            train_df.drop(columns=[target_col], errors="ignore")
+            .select_dtypes(include=["number"]).columns
+        )
+        categorical_cols = list(
+            train_df.drop(columns=[target_col], errors="ignore")
+            .select_dtypes(include=["object", "category"]).columns
+        )
+        n_classes = int(train_df[target_col].nunique())
+
+        report_parts.append(f"Target: {target_col} ({n_classes} classes)")
+        report_parts.append(f"Numeric features ({len(numeric_cols)}): {numeric_cols}")
+        report_parts.append(f"Categorical features ({len(categorical_cols)}): {categorical_cols}")
+
         state["train_df"] = train_df
-        state["train_shape"] = train_df.shape
+        state["train_shape"] = list(train_df.shape)
+        state["target_column"] = target_col
+        state["numeric_columns"] = numeric_cols
+        state["categorical_columns"] = categorical_cols
+        state["n_classes"] = n_classes
+        state["columns"] = list(train_df.columns)
+        state["missing_values"] = train_df.isnull().sum().to_dict()
     else:
         if cfg.logger:
             cfg.logger.warning("Train file not found: %s", train_path)
@@ -40,7 +71,7 @@ def step1_eda_fallback(state: dict) -> dict:
         test_df = pd.read_csv(test_path)
         report_parts.append(f"Test: {len(test_df)} rows, {len(test_df.columns)} columns")
         state["test_df"] = test_df
-        state["test_shape"] = test_df.shape
+        state["test_shape"] = list(test_df.shape)
     else:
         if cfg.logger:
             cfg.logger.warning("Test file not found: %s", test_path)
@@ -59,14 +90,18 @@ def step1_eda_fallback(state: dict) -> dict:
 
 
 def step2_train_fallback(state: dict) -> dict:
-    """Fallback training: RandomForestClassifier, no LLM."""
+    """Fallback training: Pipeline with ColumnTransformer + RandomForest, no LLM."""
     state = dict(state)
 
     try:
         import pandas as pd
         import joblib
-        from sklearn.model_selection import train_test_split
+        from sklearn.compose import ColumnTransformer
         from sklearn.ensemble import RandomForestClassifier
+        from sklearn.impute import SimpleImputer
+        from sklearn.model_selection import train_test_split
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
     except ImportError as e:
         if cfg.logger:
             cfg.logger.warning("sklearn/joblib not available: %s", e)
@@ -83,52 +118,105 @@ def step2_train_fallback(state: dict) -> dict:
     train_df_full = pd.read_csv(train_path)
     train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
 
-    target_candidates = ["target", "label", "y"]
-    target_col = None
-    for c in target_candidates:
-        if c in train_df.columns:
-            target_col = c
-            break
-    if target_col is None:
-        target_col = train_df.columns[-1]
+    target_col = state.get("target_column")
+    if not target_col:
+        for c in ("target", "label", "y"):
+            if c in train_df.columns:
+                target_col = c
+                break
+        if not target_col:
+            target_col = train_df.columns[-1]
 
     if cfg.logger:
         cfg.logger.info("Using target column: %s", target_col)
 
-    X = train_df.drop(columns=[target_col], errors="ignore").select_dtypes(include=["number"])
-    if X.empty:
-        X = train_df.drop(columns=[target_col], errors="ignore")
+    X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
+
+    numeric_cols = [
+        c for c in state.get(
+            "numeric_columns",
+            list(X.select_dtypes(include=["number"]).columns),
+        ) if c in X.columns
+    ]
+    all_cat_cols = [
+        c for c in state.get(
+            "categorical_columns",
+            list(X.select_dtypes(include=["object", "category"]).columns),
+        ) if c in X.columns
+    ]
+    low_card_cols = [c for c in all_cat_cols if X[c].nunique() <= 50]
+    high_card_cols = [c for c in all_cat_cols if X[c].nunique() > 50]
+
+    if cfg.logger:
+        cfg.logger.info(
+            "Columns: %d numeric, %d low-card cat, %d high-card cat (ordinal)",
+            len(numeric_cols), len(low_card_cols), len(high_card_cols),
+        )
+
+    num_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+    low_cat_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ])
+    high_cat_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value="__missing__")),
+        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+    ])
+
+    transformers = [
+        ("num", num_pipe, numeric_cols),
+        ("cat_low", low_cat_pipe, low_card_cols),
+    ]
+    if high_card_cols:
+        transformers.append(("cat_high", high_cat_pipe, high_card_cols))
+
+    preprocessor = ColumnTransformer(transformers)
+
+    pipeline = Pipeline([
+        ("preprocessor", preprocessor),
+        ("classifier", RandomForestClassifier(n_estimators=100, random_state=42)),
+    ])
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=0.2, random_state=42,
+    )
+    pipeline.fit(X_train, y_train)
+
     state["target_column"] = target_col
 
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    model = RandomForestClassifier(n_estimators=50, random_state=42)
-    model.fit(X_train, y_train)
-
-    model_path = Path(state["session_dir"]) / "models" / "model.joblib"
-    joblib.dump(model, model_path)
+    models_dir = Path(state["session_dir"]) / "models"
+    model_path = models_dir / "pipeline.joblib"
+    joblib.dump(pipeline, model_path)
     state["model_path"] = str(model_path)
-    state["model"] = model
 
     state["step2_train_success"] = True
     if cfg.logger:
-        cfg.logger.info("Step 2 train (fallback) done; model saved to %s", model_path)
+        from sklearn.metrics import accuracy_score, f1_score
+
+        y_pred = pipeline.predict(X_val)
+        acc = accuracy_score(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred, average="macro", zero_division=0)
+        cfg.logger.info(
+            "Step 2 train (fallback): accuracy=%.4f, f1_macro=%.4f", acc, f1,
+        )
+        cfg.logger.info("Pipeline saved to %s", model_path)
     return state
 
 
 def step3_local_eval_fallback(state: dict) -> dict:
-    """Fallback evaluation: accuracy + F1-macro, no LLM."""
+    """Fallback evaluation: load pipeline, predict, score. No LLM."""
     state = dict(state)
     model_path_str = state.get("model_path", "")
 
     if not model_path_str or not Path(model_path_str).exists():
         state["local_metrics"] = {}
         if cfg.logger:
-            cfg.logger.warning("No model found; skipping local eval.")
+            cfg.logger.warning("No model/pipeline found; skipping local eval.")
         return state
-
-    model_path = Path(model_path_str)
 
     try:
         import pandas as pd
@@ -139,22 +227,22 @@ def step3_local_eval_fallback(state: dict) -> dict:
         state["local_metrics"] = {}
         return state
 
-    model = joblib.load(model_path)
+    pipeline = joblib.load(model_path_str)
 
     train_path = Path(state.get("train_path", ""))
     train_df_full = pd.read_csv(train_path)
     train_df = train_df_full.sample(frac=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
 
     target_col = state.get("target_column", train_df.columns[-1])
-    X = train_df.drop(columns=[target_col], errors="ignore").select_dtypes(include=["number"])
+    X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
 
     _, X_val, _, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    pred = model.predict(X_val)
+    pred = pipeline.predict(X_val)
     acc = accuracy_score(y_val, pred)
     try:
-        f1 = f1_score(y_val, pred, average="macro")
+        f1 = f1_score(y_val, pred, average="macro", zero_division=0)
     except Exception:
         f1 = 0.0
 
@@ -171,17 +259,15 @@ def step3_local_eval_fallback(state: dict) -> dict:
 
 
 def step4_submission_fallback(state: dict) -> dict:
-    """Fallback submission builder, no LLM."""
+    """Fallback submission builder: load pipeline, predict on test. No LLM."""
     state = dict(state)
     model_path_str = state.get("model_path", "")
 
     if not model_path_str or not Path(model_path_str).exists():
         state["submission_path"] = ""
         if cfg.logger:
-            cfg.logger.warning("No model; skipping submission build.")
+            cfg.logger.warning("No pipeline; skipping submission build.")
         return state
-
-    model_path = Path(model_path_str)
 
     try:
         import pandas as pd
@@ -190,7 +276,7 @@ def step4_submission_fallback(state: dict) -> dict:
         state["submission_path"] = ""
         return state
 
-    model = joblib.load(model_path)
+    pipeline = joblib.load(model_path_str)
     test_path = Path(state.get("test_path", ""))
     test_df = pd.read_csv(test_path) if test_path.exists() else None
 
@@ -198,22 +284,21 @@ def step4_submission_fallback(state: dict) -> dict:
         state["submission_path"] = ""
         return state
 
-    if hasattr(model, "feature_names_in_"):
-        feats = [c for c in model.feature_names_in_ if c in test_df.columns]
-        X_test = test_df[feats] if feats else test_df.select_dtypes(include=["number"])
-    else:
-        X_test = test_df.select_dtypes(include=["number"])
+    target_col = state.get("target_column", "")
+    X_test = test_df.drop(columns=[target_col], errors="ignore")
 
-    preds = model.predict(X_test)
+    preds = pipeline.predict(X_test)
     out_path = Path(state["session_dir"]) / "submission.csv"
 
     sample_path = Path(state.get("sample_submission_path", ""))
     if sample_path.exists():
         sample = pd.read_csv(sample_path)
-        out_df = sample.copy()
-        pred_col = sample.columns[1] if len(sample.columns) > 1 else "prediction"
+        out_df = sample[sample.columns].copy()
+        pred_col = sample.columns[-1]
         out_df[pred_col] = preds
-        out_df = out_df[sample.columns]
+        assert list(out_df.columns) == list(sample.columns), (
+            f"Column mismatch: {list(out_df.columns)} != {list(sample.columns)}"
+        )
     else:
         id_col = "id" if "id" in test_df.columns else test_df.columns[0]
         out_df = test_df[[id_col]].copy() if id_col in test_df.columns else pd.DataFrame({"id": range(len(preds))})
@@ -224,7 +309,10 @@ def step4_submission_fallback(state: dict) -> dict:
 
     state["step4_submission_success"] = True
     if cfg.logger:
-        cfg.logger.info("Step 4 submission (fallback) saved to %s", out_path)
+        cfg.logger.info(
+            "Step 4 submission (fallback): %d rows, %d cols, saved to %s",
+            len(out_df), len(out_df.columns), out_path,
+        )
     return state
 
 

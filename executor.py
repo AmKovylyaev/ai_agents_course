@@ -100,12 +100,17 @@ print("STATE_SAVED_SUCCESSFULLY")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(wrapped_code)
 
+        env = os.environ.copy()
+        project_dir = str(cfg.SCRIPT_DIR)
+        env["PYTHONPATH"] = project_dir + os.pathsep + env.get("PYTHONPATH", "")
+
         result = subprocess.run(
             ["python3", path],
             capture_output=True,
             text=True,
             timeout=timeout_sec,
             cwd=str(session_dir),
+            env=env,
         )
 
         if result.returncode == 0:
