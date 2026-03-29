@@ -26,6 +26,7 @@ from prompts import (
     STEP7_REPORT_PROMPT,
     STEP_JUDGE_PROMPT,
 )
+from rag.rag_tools import inject_rag_context_into_state
 from steps_fallback import (
     step1_eda_fallback,
     step2_train_fallback,
@@ -34,11 +35,11 @@ from steps_fallback import (
     step7_report_fallback,
     step_judge_fallback,
 )
+from tools.web_context import inject_web_context_into_state
 
 
-# ---------------------------------------------------------------------------
-# Steps 1–4: three-agent feedback loop
-# ---------------------------------------------------------------------------
+DEFAULT_RAG_QUERY_MODE = "hybrid_code"
+
 
 def _run_feedback_step(
     step_name: str,
@@ -76,38 +77,351 @@ def _run_feedback_step(
     return state
 
 
+def _get_rag_query_mode(state: dict) -> str:
+    mode = str(state.get("rag_query_mode", DEFAULT_RAG_QUERY_MODE) or DEFAULT_RAG_QUERY_MODE).strip().lower()
+    if mode not in {"text", "code", "hybrid_code"}:
+        mode = DEFAULT_RAG_QUERY_MODE
+    return mode
+
+
+def _sanitize_model_type(model_type: str) -> str:
+    model_type = (model_type or "catboost").strip()
+    return model_type or "catboost"
+
+
+def _build_eda_code_sketch(state: dict) -> str:
+    return '''import pandas as pd
+import matplotlib.pyplot as plt
+
+train_df = pd.read_csv(train_path)
+test_df = pd.read_csv(test_path)
+
+target_column = train_df.columns[-1]
+feature_df = train_df.drop(columns=[target_column])
+
+numeric_columns = feature_df.select_dtypes(include=["number", "bool"]).columns.tolist()
+categorical_columns = [c for c in feature_df.columns if c not in numeric_columns]
+
+missing_values = train_df.isna().sum().to_dict()
+n_classes = train_df[target_column].nunique(dropna=False)
+unique_ratio = float(n_classes) / max(len(train_df), 1)
+if pd.api.types.is_numeric_dtype(train_df[target_column]) and (n_classes > 20 or unique_ratio > 0.05):
+    task_type = "regression"
+else:
+    task_type = "classification"
+
+# save eda summary and only the required figures
+train_df.describe(include="all")
+'''
+
+
+def _build_train_code_sketch(state: dict) -> str:
+    task_type = state.get("task_type", "classification") or "classification"
+    model_type = _sanitize_model_type(str(state.get("model_type", "catboost"))).lower()
+    if model_type == "xgboost":
+        model_ctor = "XGBRegressor(objective='reg:squarederror')" if task_type == "regression" else "XGBClassifier(eval_metric='logloss')"
+    elif model_type == "lightgbm":
+        model_ctor = "LGBMRegressor(objective='mse')" if task_type == "regression" else "LGBMClassifier()"
+    else:
+        model_ctor = "CatBoostRegressor(verbose=False)" if task_type == "regression" else "CatBoostClassifier(verbose=False)"
+    numeric_columns = repr(state.get("numeric_columns", []))
+    categorical_columns = repr(state.get("categorical_columns", []))
+    target_column = state.get("target_column", "target")
+    test_size = 1.0 - float(state.get("train_sample_frac", 0.8))
+    return f'''import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+train_df = pd.read_csv(train_path)
+target_col = {target_column!r}
+X = train_df.drop(columns=[target_col])
+y = train_df[target_col]
+
+numeric_features = [c for c in {numeric_columns} if c in X.columns]
+categorical_features = [c for c in {categorical_columns} if c in X.columns]
+
+num_pipe = Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())])
+cat_pipe = Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder(handle_unknown="ignore"))])
+preprocessor = ColumnTransformer([
+    ("num", num_pipe, numeric_features),
+    ("cat", cat_pipe, categorical_features),
+], remainder="drop")
+model = {model_ctor}
+pipeline = Pipeline([("preprocessor", preprocessor), ("model", model)])
+
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y, test_size={test_size:.3f}, random_state=42
+)
+pipeline.fit(X_train, y_train)
+preds = pipeline.predict(X_val)
+'''
+
+
+def _build_eval_code_sketch(state: dict) -> str:
+    task_type = state.get("task_type", "classification") or "classification"
+    target_column = state.get("target_column", "target")
+    test_size = 1.0 - float(state.get("train_sample_frac", 0.8))
+    metric_block = (
+        'metrics = {"mse": mean_squared_error(y_val_out, preds_out), "mae": mean_absolute_error(y_val_out, preds_out), "r2": r2_score(y_val_out, preds_out)}'
+        if task_type == "regression"
+        else 'metrics = {"accuracy": accuracy_score(y_val, preds), "precision": precision_score(y_val, preds, average="macro", zero_division=0), "recall": recall_score(y_val, preds, average="macro", zero_division=0), "f1": f1_score(y_val, preds, average="macro", zero_division=0)}'
+    )
+    return f'''import json
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+train_df = pd.read_csv(train_path)
+pipeline = joblib.load(model_path)
+target_col = {target_column!r}
+X = train_df.drop(columns=[target_col])
+y = train_df[target_col]
+
+y_for_split = np.log1p(y) if target_transform == "log1p" else y
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y_for_split, test_size={test_size:.3f}, random_state=42
+)
+train_preds = pipeline.predict(X_train)
+preds = pipeline.predict(X_val)
+
+# inverse-transform if needed and compute metrics on original scale
+{metric_block}
+with open(local_metrics_path, "w", encoding="utf-8") as f:
+    json.dump({{"train": {{}}, "val": metrics}}, f, ensure_ascii=False, indent=2)
+'''
+
+
+def _build_submission_code_sketch(state: dict) -> str:
+    target_column = state.get("target_column", "target")
+    return f'''import joblib
+import numpy as np
+import pandas as pd
+
+sample_submission = pd.read_csv(sample_submission_path)
+test_df = pd.read_csv(test_path)
+model = joblib.load(model_path)
+
+target_col = {target_column!r}
+if target_col in test_df.columns:
+    test_df = test_df.drop(columns=[target_col])
+
+preds = model.predict(test_df)
+if target_transform == "log1p":
+    preds = np.expm1(preds)
+
+submission = sample_submission.copy()
+submission.iloc[:, -1] = preds
+submission.to_csv(submission_path, index=False)
+'''
+
+
+def _build_rag_query(intent_query: str, code_sketch: str, query_mode: str) -> str:
+    if query_mode == "text":
+        return intent_query
+    if query_mode == "code":
+        return code_sketch
+    return f"Intent:\n{intent_query}\n\nCode sketch:\n{code_sketch}"
+
+
+def _inject_rag_with_mode(state: dict, *, intent_query: str, code_sketch: str, log_label: str) -> dict:
+    state = dict(state)
+    query_mode = _get_rag_query_mode(state)
+    rag_query = _build_rag_query(intent_query, code_sketch, query_mode)
+
+    state["rag_query_mode"] = query_mode
+    state["rag_code_sketch"] = code_sketch
+
+    state = inject_rag_context_into_state(
+        state=state,
+        query=rag_query,
+        top_k=state.get("rag_top_k", 5),
+        search_type=state.get("rag_search_type", "hybrid"),
+        section_filter=None,
+    )
+
+    return state
+
+
+def _ensure_rag_defaults(state: dict) -> dict:
+    state = dict(state)
+    state.setdefault("rag_query_mode", DEFAULT_RAG_QUERY_MODE)
+    state.setdefault("rag_code_sketch", "")
+    state.setdefault("rag_query", "")
+    state.setdefault("rag_context", "")
+    state.setdefault("rag_search_type", state.get("rag_search_type", "hybrid"))
+    return state
+
+
+def _inject_eda_context(state: dict) -> dict:
+    state = _ensure_rag_defaults(state)
+    if state.get("rag_enabled", False):
+        intent_query = (
+            "tabular dataset exploratory data analysis notebook; "
+            "dataset loading; column profiling; missing values; "
+            "target detection; task type inference; numeric correlations; "
+            "categorical summary"
+        )
+        state = _inject_rag_with_mode(
+            state,
+            intent_query=intent_query,
+            code_sketch=_build_eda_code_sketch(state),
+            log_label="EDA",
+        )
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            "best practices for tabular exploratory data analysis target detection "
+            "missing values categorical features"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for EDA step: %s", web_query)
+    return state
+
+
+def _inject_train_context(state: dict) -> dict:
+    state = _ensure_rag_defaults(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        intent_query = (
+            f"tabular machine learning notebook for {task_type}; "
+            f"preprocessing categorical and numeric features; "
+            f"columntransformer pipeline; training and evaluation; "
+            f"submission pattern"
+        )
+        state = _inject_rag_with_mode(
+            state,
+            intent_query=intent_query,
+            code_sketch=_build_train_code_sketch(state),
+            log_label="training",
+        )
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"best practices for tabular {state.get('task_type', 'regression')} "
+            f"with categorical features catboost cross validation"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for training step: %s", web_query)
+    return state
+
+
+def _inject_eval_context(state: dict) -> dict:
+    state = _ensure_rag_defaults(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        intent_query = (
+            f"tabular machine learning notebook for {task_type} evaluation; "
+            f"reproduce train validation split; metrics calculation; "
+            f"pipeline prediction; local validation report"
+        )
+        state = _inject_rag_with_mode(
+            state,
+            intent_query=intent_query,
+            code_sketch=_build_eval_code_sketch(state),
+            log_label="eval",
+        )
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"how to evaluate tabular {state.get('task_type', 'regression')} "
+            f"catboost cross validation metric selection"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for eval step: %s", web_query)
+    return state
+
+
+def _inject_submission_context(state: dict) -> dict:
+    state = _ensure_rag_defaults(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        intent_query = (
+            f"tabular machine learning notebook for {task_type} submission; "
+            f"load saved pipeline; predict on test dataframe; "
+            f"match sample submission columns and row order; save submission csv"
+        )
+        state = _inject_rag_with_mode(
+            state,
+            intent_query=intent_query,
+            code_sketch=_build_submission_code_sketch(state),
+            log_label="submission",
+        )
+
+    if state.get("web_search_enabled", False):
+        web_query = "kaggle submission csv format regression predict best practices"
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for submission step: %s", web_query)
+    return state
+
+
 def step1_eda_agent(state: dict) -> dict:
+    state = _inject_eda_context(state)
     return _run_feedback_step(
         "step1_eda",
-        STEP1_PLANNER_PROMPT, STEP1_EDA_PROMPT, STEP1_VERIFIER_PROMPT,
-        step1_eda_fallback, state,
+        STEP1_PLANNER_PROMPT,
+        STEP1_EDA_PROMPT,
+        STEP1_VERIFIER_PROMPT,
+        step1_eda_fallback,
+        state,
         timeout_sec=120,
     )
 
 
 def step2_train_agent(state: dict) -> dict:
+    state = _inject_train_context(state)
     return _run_feedback_step(
         "step2_train",
-        STEP2_PLANNER_PROMPT, STEP2_TRAIN_PROMPT, STEP2_VERIFIER_PROMPT,
-        step2_train_fallback, state,
+        STEP2_PLANNER_PROMPT,
+        STEP2_TRAIN_PROMPT,
+        STEP2_VERIFIER_PROMPT,
+        step2_train_fallback,
+        state,
         timeout_sec=360,
     )
 
 
 def step3_local_eval_agent(state: dict) -> dict:
+    state = _inject_eval_context(state)
     return _run_feedback_step(
         "step3_eval",
-        STEP3_PLANNER_PROMPT, STEP3_EVAL_PROMPT, STEP3_VERIFIER_PROMPT,
-        step3_local_eval_fallback, state,
+        STEP3_PLANNER_PROMPT,
+        STEP3_EVAL_PROMPT,
+        STEP3_VERIFIER_PROMPT,
+        step3_local_eval_fallback,
+        state,
         timeout_sec=120,
     )
 
 
 def step4_submission_agent(state: dict) -> dict:
+    state = _inject_submission_context(state)
     return _run_feedback_step(
         "step4_submission",
-        STEP4_PLANNER_PROMPT, STEP4_SUBMISSION_PROMPT, STEP4_VERIFIER_PROMPT,
-        step4_submission_fallback, state,
+        STEP4_PLANNER_PROMPT,
+        STEP4_SUBMISSION_PROMPT,
+        STEP4_VERIFIER_PROMPT,
+        step4_submission_fallback,
+        state,
         timeout_sec=120,
     )
 

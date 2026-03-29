@@ -25,12 +25,13 @@ Requirements (in .env at project root):
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, List
 import concurrent.futures
+from pathlib import Path
+from typing import Any
 
 import config as cfg
 from config import log as _log
+from rag.rag_tools import build_notebook_rag_index
 from steps_agent import (
     step1_eda_agent,
     step2_train_agent,
@@ -114,6 +115,32 @@ def run_candidate_branch(branch_id: int, iteration: int, base_state: dict, sessi
         return branch_state
 
 
+def _maybe_build_rag_index(state: dict[str, Any]) -> dict[str, Any]:
+    state = dict(state)
+    if not state.get("rag_enabled", False):
+        return state
+
+    kb_dir = Path(state["notebooks_kb_dir"])
+    if not kb_dir.exists():
+        state["rag_stats"] = {
+            "notebooks_root": str(kb_dir),
+            "index_dir": state["rag_index_dir"],
+            "n_chunks": 0,
+        }
+        _log("Notebook KB directory does not exist: %s", kb_dir, level="warning")
+        return state
+
+    rag_stats = build_notebook_rag_index(
+        notebooks_root=kb_dir,
+        index_dir=state["rag_index_dir"],
+        max_chars=1600,
+        embedding_model=state["rag_embedding_model"],
+    )
+    state["rag_stats"] = rag_stats
+    _log("RAG index built: %s", rag_stats)
+    return state
+
+
 def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, Any]:
     """Execute the full agent pipeline and return the final state dict."""
     session_dir = cfg.create_session_dir()
@@ -132,10 +159,26 @@ def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, 
         "model_path": str(session_dir / "models" / "pipeline.joblib"),
         "submission_path": str(session_dir / "submission.csv"),
         "target_column": "",
+        "rag_enabled": cfg.RAG_ENABLED,
+        "rag_top_k": cfg.RAG_TOP_K,
+        "rag_search_type": cfg.RAG_SEARCH_TYPE,
+        "rag_embedding_model": cfg.RAG_EMBEDDING_MODEL,
+        "notebooks_kb_dir": str(cfg.NOTEBOOKS_KB_DIR),
+        "rag_index_dir": str(cfg.RAG_INDEX_DIR),
+        "rag_context": "",
+        "rag_results": [],
+        "rag_query": "",
+        "web_search_enabled": cfg.WEB_SEARCH_ENABLED,
+        "web_search_max_results": cfg.WEB_SEARCH_MAX_RESULTS,
+        "web_query": "",
+        "web_context": "",
+        "web_results": [],
     }
 
     _log("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
+
+    state = _maybe_build_rag_index(state)
 
     best_overall_state = None
     best_overall_metric = None
@@ -259,7 +302,6 @@ def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, 
     _log("=" * 60)
     _log("Pipeline finished. Session: %s", session_dir)
     _log("Report: %s", state.get("report_path", "N/A"))
-
     return state
 
 
