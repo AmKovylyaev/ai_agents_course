@@ -292,6 +292,8 @@ def mini_feedback_loop(
             # ── Planner (simple chain) ────────────────────────────────
             if logger:
                 logger.info("%s: [Planner] Generating plan...", step_name)
+            if cfg.logger:
+                cfg.logger.info("Using improvement hint: %s", state.get("improvement_hint", ""))
             plan = planner_chain.invoke(prompt_state)
             if logger:
                 logger.info("%s: [Planner] Plan ready (%d chars)", step_name, len(plan))

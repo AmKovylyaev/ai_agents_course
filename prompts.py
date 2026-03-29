@@ -23,7 +23,10 @@ Context:
 - Session directory: {session_dir}
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
-- Improvement hints from previous judge (if any): {improvement_hint}
+- Feedback from judge (if any): {improvement_hint}
+
+IMPORTANT: If feedback from judge is provided (not empty), incorporate its suggestions into the plan. 
+For example, if it says "Feature engineering: Parse the 'last_dt' column into year, month, day, weekday, and maybe hour if present"
 
 Output a numbered step-by-step plan covering:
 1. Load the train and test data from the provided paths
@@ -136,9 +139,11 @@ Context:
 - Train/val split: test_size={train_sample_frac}, random_state=42
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
-- Improvement hints from previous judge (if any): {improvement_hint}
+- Feedback from judge (if any): {improvement_hint}
 
 IMPORTANT — Use ALL available columns with appropriate encoding:
+- If feedback from judge is provided (not empty), incorporate its suggestions into the plan. 
+For example, if it says "Switch to gradient‑boosting libraries such as XGBoost, LightGBM, or CatBoost which handle mixed data types and high‑cardinality categories more effectively."
 - FIRST: drop the target column to get X; derive column lists from X (not from the full DataFrame).
 - Build a sklearn Pipeline with ColumnTransformer. Split categoricals by cardinality:
   * Numeric columns: SimpleImputer(strategy="median") → StandardScaler
@@ -252,7 +257,6 @@ Context:
 - Task type: {task_type}
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
-- Improvement hints from previous judge (if any): {improvement_hint}
 
 Key point:
 - The saved pipeline.joblib contains the FULL sklearn Pipeline (ColumnTransformer + model).
@@ -483,20 +487,16 @@ Context:
 - Local Metrics (validation MSE and possibly other regression metrics): {local_metrics}
 - Previous code: {previous_code}
 
-Requirements:
-1. Analyze if the MSE is reasonable for this regression task. Compare with a simple baseline (e.g., predicting the mean target value). If the MSE is high relative to the target variance, it indicates poor performance.
-2. Check for overfitting if possible (e.g., by looking at training vs validation error, though we only have validation).
-3. Determine if the results are "SUFFICIENT" to proceed to submission or "NEED_REFINEMENT".
-4. If refinement is needed, provide concrete, actionable suggestions. Focus on:
-   - Feature engineering (e.g., date/time features, property characteristics, lag variables)
-   - Model choice (e.g., XGBoost, LightGBM, neural networks, ensemble)
-   - Hyperparameter tuning
-   - Handling outliers or target transformation (log, sqrt)
-   - Any other data-specific insights from EDA
+Return a JSON object with the following keys:
+- "decision": "SUFFICIENT" or "NEED_REFINEMENT"
+- "reasoning": short explanation
+- "eda_suggestions": specific suggestions for improving Exploratory Data Analysis (e.g., "add date/time features", "analyze missing values differently")
+- "train_suggestions": specific suggestions for improving model training (e.g., "use XGBoost instead of RandomForest", "apply log transform to target", "add feature scaling")
 
-Your output MUST be a valid JSON object with exactly these three keys: "decision", "reasoning", "suggestions".
-Do NOT include any additional text, comments, or markdown formatting. Output only the JSON object.
+If the results are already sufficient, leave suggestions empty strings.
+Output ONLY the JSON object, no extra text.
+
 Example:
-{{"decision": "NEED_REFINEMENT", "reasoning": "Validation MSE is 125.4, while baseline mean prediction MSE is 200, so it's better but still high.", "suggestions": "Add date features (month, day of week), use XGBoost with early stopping, and try log transformation on target."}}
+{{"decision": "NEED_REFINEMENT", "reasoning": "MSE is high relative to baseline", "eda_suggestions": "Extract day-of-week from timestamp columns", "train_suggestions": "Try LightGBM with early stopping"}}
 """
 

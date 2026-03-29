@@ -82,13 +82,17 @@ def run_pipeline() -> dict[str, Any]:
             cfg.logger.info("=" * 60)
             cfg.logger.info("Refinement iteration %d/%d", iteration, max_iterations)
 
-        # Если есть предложения от судьи, передаём их в EDA/Train как подсказку
-        if state.get("verification_suggestions"):
-            state["improvement_hint"] = state["verification_suggestions"]
-            if cfg.logger:
-                cfg.logger.info("Using improvement hint: %s", state["improvement_hint"])
-        else:
-            state["improvement_hint"] = ""
+        # # Если есть предложения от судьи, передаём их в EDA/Train как подсказку
+        # if state.get("verification_suggestions"):
+        #     state["improvement_hint"] = state["verification_suggestions"]
+        #     # if cfg.logger:
+        #     #     cfg.logger.info("Using improvement hint: %s", state["improvement_hint"])
+        # else:
+        #     state["improvement_hint"] = ""
+
+        state["improvement_hint"] = state.get("eda_improvement_hint", "")
+        if cfg.logger and state["improvement_hint"]:
+            cfg.logger.info(f"Using EDA hint: {state['improvement_hint']}")
 
         # -- Step 1: EDA --------------------------------------------------------
         if cfg.logger:
@@ -96,12 +100,18 @@ def run_pipeline() -> dict[str, Any]:
             cfg.logger.info("Running step1_eda...")
         state = step1_eda_agent(state)
 
+        state["improvement_hint"] = state.get("train_improvement_hint", "")
+        if cfg.logger and state["improvement_hint"]:
+            cfg.logger.info(f"Using Train hint: {state['improvement_hint']}")
         # -- Step 2: Train ------------------------------------------------------
         if cfg.logger:
             cfg.logger.info("=" * 60)
             cfg.logger.info("Running step2_train...")
         state = step2_train_agent(state)
 
+        # state["improvement_hint"] = state.get("eval_improvement_hint", "")
+        # if cfg.logger and state["improvement_hint"]:
+        #     cfg.logger.info(f"Using Eval hint: {state['improvement_hint']}")
         # -- Step 3: Eval -------------------------------------------------------
         if cfg.logger:
             cfg.logger.info("=" * 60)
@@ -148,29 +158,29 @@ def run_pipeline() -> dict[str, Any]:
         if cfg.logger:
             cfg.logger.warning("No valid iteration, using last state.")
 
-    # # -- Step 4: Submission -------------------------------------------------
-    # if cfg.logger:
-    #     cfg.logger.info("=" * 60)
-    #     cfg.logger.info("Running step4_submission...")
-    # state = step4_submission_agent(state)
-    #
-    # # -- Step 5: Submit to Kaggle -------------------------------------------
-    # if cfg.logger:
-    #     cfg.logger.info("=" * 60)
-    #     cfg.logger.info("Running step5_submit...")
-    # state = step5_submit(state)
-    #
-    # # -- Step 6: Wait / confirm ---------------------------------------------
-    # if cfg.logger:
-    #     cfg.logger.info("=" * 60)
-    #     cfg.logger.info("Running step6_wait_results...")
-    # state = step6_wait_results(state)
-    #
-    # # -- Step 7: Report -----------------------------------------------------
-    # if cfg.logger:
-    #     cfg.logger.info("=" * 60)
-    #     cfg.logger.info("Running step7_report...")
-    # state = step7_report_agent(state)
+    # -- Step 4: Submission -------------------------------------------------
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Running step4_submission...")
+    state = step4_submission_agent(state)
+
+    # -- Step 5: Submit to Kaggle -------------------------------------------
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Running step5_submit...")
+    state = step5_submit(state)
+
+    # -- Step 6: Wait / confirm ---------------------------------------------
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Running step6_wait_results...")
+    state = step6_wait_results(state)
+
+    # -- Step 7: Report -----------------------------------------------------
+    if cfg.logger:
+        cfg.logger.info("=" * 60)
+        cfg.logger.info("Running step7_report...")
+    state = step7_report_agent(state)
 
     if cfg.logger:
         cfg.logger.info("=" * 60)

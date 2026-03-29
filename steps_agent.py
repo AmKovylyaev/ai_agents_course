@@ -237,17 +237,27 @@ def step_judge_result_agent(state: dict) -> dict:
                             return json.loads(match.group(0))
                         except:
                             pass
-                    raise ValueError("No valid JSON found in LLM response")
+                    return {
+                        "decision": "NEED_REFINEMENT",
+                        "reasoning": "Failed to parse JSON, using fallback",
+                        "eda_suggestions": "",
+                        "train_suggestions": ""
+                    }
 
             result = extract_json(response)
             state["verification_decision"] = result.get("decision", "NEED_REFINEMENT")
             state["verification_reasoning"] = result.get("reasoning", "")
-            state["verification_suggestions"] = result.get("suggestions", "")
+            state["eda_improvement_hint"] = result.get("eda_suggestions", "")
+            state["train_improvement_hint"] = result.get("train_suggestions", "")
+            # state["eval_improvement_hint"] = result.get("eval_suggestions", "")
             state["verification_raw"] = response
+
             if cfg.logger:
                 cfg.logger.info("Judge decision: %s", state["verification_decision"])
                 if state["verification_decision"] == "NEED_REFINEMENT":
-                    cfg.logger.info("Suggestions: %s", state["verification_suggestions"])
+                    cfg.logger.info("EDA suggestions: %s", state["eda_improvement_hint"])
+                    cfg.logger.info("Train suggestions: %s", state["train_improvement_hint"])
+                    # cfg.logger.info("Eval suggestions: %s", state["eval_improvement_hint"])
             return state
 
         except Exception as e:
