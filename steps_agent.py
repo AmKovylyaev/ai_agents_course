@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import config as cfg
+from config import log as _log
 from executor import create_step_chain, run_step_with_retry
 from mini_feedback_loop import mini_feedback_loop
 from prompts import (
@@ -33,11 +34,6 @@ from steps_fallback import (
     step7_report_fallback,
     step_judge_fallback,
 )
-
-
-def _log(msg: str, *args, level: str = "info") -> None:
-    if cfg.logger:
-        getattr(cfg.logger, level)(msg, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +187,7 @@ def step_judge_result_agent(state: dict) -> dict:
 
     prompt_data = {
         "local_metrics": metrics_str,
-        "previous_code": model_info,
+        "model_info": model_info,
     }
 
     chain = create_step_chain(STEP_JUDGE_PROMPT, llm)

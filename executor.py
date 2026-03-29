@@ -11,6 +11,29 @@ import tempfile
 from pathlib import Path
 
 import config as cfg
+from config import build_prompt_state
+
+_omp_lib_cache: dict[str, str | None] = {}
+
+
+def _get_omp_lib_path() -> str | None:
+    """Return the libomp library path on macOS (cached), or None."""
+    if "result" in _omp_lib_cache:
+        return _omp_lib_cache["result"]
+    import platform, shutil
+    result = None
+    if platform.system() == "Darwin" and shutil.which("brew"):
+        try:
+            prefix = subprocess.check_output(
+                ["brew", "--prefix", "libomp"], text=True, timeout=5,
+            ).strip()
+            omp_lib = str(Path(prefix) / "lib")
+            if Path(omp_lib).exists():
+                result = omp_lib
+        except Exception:
+            pass
+    _omp_lib_cache["result"] = result
+    return result
 
 
 def extract_code_block(text: str) -> str | None:
@@ -86,7 +109,7 @@ for k, v in state.items():
         try:
             json.dumps(v)
             state_to_save[k] = v
-        except:
+        except (TypeError, ValueError):
             pass
 
 with open(state_output_file, "w", encoding="utf-8") as f:
@@ -103,17 +126,9 @@ print("STATE_SAVED_SUCCESSFULLY")
         env = os.environ.copy()
         project_dir = str(cfg.SCRIPT_DIR)
         env["PYTHONPATH"] = project_dir + os.pathsep + env.get("PYTHONPATH", "")
-        import shutil, platform
-        if platform.system() == "Darwin" and shutil.which("brew"):
-            try:
-                prefix = subprocess.check_output(
-                    ["brew", "--prefix", "libomp"], text=True, timeout=5,
-                ).strip()
-                omp_lib = str(Path(prefix) / "lib")
-                if Path(omp_lib).exists():
-                    env["DYLD_LIBRARY_PATH"] = omp_lib + ":" + env.get("DYLD_LIBRARY_PATH", "")
-            except Exception:
-                pass
+        omp_lib = _get_omp_lib_path()
+        if omp_lib:
+            env["DYLD_LIBRARY_PATH"] = omp_lib + ":" + env.get("DYLD_LIBRARY_PATH", "")
 
         result = subprocess.run(
             ["python3", path],
@@ -182,30 +197,7 @@ def run_step_with_retry(
             if logger:
                 logger.info("%s: Generating code with LLM...", step_name)
 
-            prompt_state: dict = {}
-            for k, v in state.items():
-                if isinstance(v, Path):
-                    prompt_state[k] = str(v)
-                elif isinstance(v, dict):
-                    prompt_state[k] = str(v)
-                else:
-                    prompt_state[k] = v if v is not None else ""
-
-            prompt_state.setdefault("last_error", "")
-            prompt_state.setdefault("previous_code", "")
-            prompt_state.setdefault("model_path", state.get("model_path", ""))
-            prompt_state.setdefault("target_column", state.get("target_column", ""))
-            prompt_state.setdefault("submit_ok", state.get("submit_ok", False))
-            prompt_state.setdefault("public_score", state.get("public_score", "N/A"))
-            prompt_state.setdefault("private_score", state.get("private_score", "N/A"))
-            prompt_state.setdefault("train_path", state.get("train_path", ""))
-            prompt_state.setdefault("test_path", state.get("test_path", ""))
-            prompt_state.setdefault("sample_submission_path", state.get("sample_submission_path", ""))
-            prompt_state.setdefault("improvement_hint", state.get("improvement_hint", ""))
-            prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
-            prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
-            prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
-
+            prompt_state = build_prompt_state(state)
             code_response = chain.invoke(prompt_state)
 
             code = extract_code_block(code_response)
@@ -241,11 +233,10 @@ def run_step_with_retry(
                     state["previous_code"] = code
                 continue
 
-            code_file = Path(state["session_dir"]) / "code" / f"{step_name}.py"
-            with open(code_file, "w", encoding="utf-8") as f:
-                f.write(code)
-            if logger:
-                logger.info("%s: Code saved to %s", step_name, code_file)
+            code_dir = Path(state["session_dir"]) / "code"
+            code_dir.mkdir(exist_ok=True)
+            code_file = code_dir / f"{step_name}.py"
+            code_file.write_text(code, encoding="utf-8")
 
             if logger:
                 logger.info("%s: Executing code...", step_name)

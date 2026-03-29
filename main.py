@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import config as cfg
+from config import log as _log
 from steps_agent import (
     step1_eda_agent,
     step2_train_agent,
@@ -38,11 +39,6 @@ from steps_agent import (
     step7_report_agent,
 )
 from steps_kaggle import step5_submit, step6_wait_results
-
-
-def _log(msg: str, *args, level: str = "info") -> None:
-    if cfg.logger:
-        getattr(cfg.logger, level)(msg, *args)
 
 
 def _log_metrics(local_metrics: dict) -> None:
@@ -128,12 +124,19 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         state = step_judge_result_agent(state)
 
         val_metrics = state.get("local_metrics", {}).get("val", state.get("local_metrics", {}))
-        current_mse = val_metrics.get("mse") if isinstance(val_metrics, dict) else None
-        if current_mse is not None:
-            if best_metric is None or current_mse < best_metric:
-                best_metric = current_mse
+        if isinstance(val_metrics, dict):
+            task = state.get("task_type", "classification")
+            if task == "regression":
+                current = val_metrics.get("mse")
+                is_better = current is not None and (best_metric is None or current < best_metric)
+            else:
+                current = val_metrics.get("f1") or val_metrics.get("accuracy")
+                is_better = current is not None and (best_metric is None or current > best_metric)
+            if is_better:
+                best_metric = current
                 best_state = dict(state)
-                _log("New best model (MSE=%.4f)", current_mse)
+                metric_name = "MSE" if task == "regression" else "F1/Acc"
+                _log("New best model (%s=%.4f)", metric_name, current)
 
         decision = state.get("verification_decision", "NEED_REFINEMENT")
         if decision == "SUFFICIENT":
@@ -142,7 +145,7 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         _log("Judge: NEED_REFINEMENT — continuing loop.")
 
     if best_state is not None:
-        _log("Using best model from iterations (MSE=%.4f)", best_metric)
+        _log("Using best model from iterations (best=%.4f)", best_metric)
         state.update(best_state)
     else:
         _log("No valid metric tracked, using last state.", level="warning")

@@ -63,7 +63,6 @@ def step1_eda_fallback(state: dict) -> dict:
         report_parts.append(f"Numeric features ({len(numeric_cols)}): {numeric_cols}")
         report_parts.append(f"Categorical features ({len(categorical_cols)}): {categorical_cols}")
 
-        state["train_df"] = train_df
         state["train_shape"] = list(train_df.shape)
         state["target_column"] = target_col
         state["numeric_columns"] = numeric_cols
@@ -79,7 +78,6 @@ def step1_eda_fallback(state: dict) -> dict:
     if test_path.exists():
         test_df = pd.read_csv(test_path)
         report_parts.append(f"Test: {len(test_df)} rows, {len(test_df.columns)} columns")
-        state["test_df"] = test_df
         state["test_shape"] = list(test_df.shape)
     else:
         if cfg.logger:
@@ -218,6 +216,7 @@ def step2_train_fallback(state: dict) -> dict:
     if task_type == "regression":
         model = CatBoostRegressor(
             iterations=500, learning_rate=0.1, depth=6,
+            loss_function="RMSE",
             random_seed=42, verbose=0, cat_features=cat_indices,
         )
     else:
@@ -379,7 +378,16 @@ def step4_submission_fallback(state: dict) -> dict:
         state["submission_path"] = ""
         return state
 
-    model = joblib.load(model_path_str)
+    try:
+        model = joblib.load(model_path_str)
+        if not hasattr(model, "predict"):
+            raise ValueError(f"Loaded object ({type(model).__name__}) has no predict() method")
+    except Exception as e:
+        state["submission_path"] = ""
+        if cfg.logger:
+            cfg.logger.warning("Cannot load model for submission: %s", e)
+        return state
+
     test_path = Path(state.get("test_path", ""))
     test_df = pd.read_csv(test_path) if test_path.exists() else None
 

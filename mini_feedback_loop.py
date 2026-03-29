@@ -23,20 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import config as cfg
+from config import log as _log, build_prompt_state as _build_prompt_state
 from executor import (
     create_step_chain,
     validate_code,
     execute_code,
 )
-
-
-# ---------------------------------------------------------------------------
-# Logging helper
-# ---------------------------------------------------------------------------
-
-def _log(msg: str, *args, level: str = "info") -> None:
-    if cfg.logger:
-        getattr(cfg.logger, level)(msg, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -60,47 +52,6 @@ def _save_text(directory: Path, filename: str, text: str) -> Path:
     p = directory / filename
     p.write_text(text, encoding="utf-8")
     return p
-
-
-# ---------------------------------------------------------------------------
-# Prompt-state helper
-# ---------------------------------------------------------------------------
-
-def _build_prompt_state(state: dict) -> dict:
-    """Convert state to a dict of string values suitable for prompt formatting."""
-    prompt_state: dict = {}
-    for k, v in state.items():
-        if isinstance(v, Path):
-            prompt_state[k] = str(v)
-        elif isinstance(v, dict):
-            prompt_state[k] = str(v)
-        else:
-            prompt_state[k] = v if v is not None else ""
-
-    prompt_state.setdefault("last_error", "")
-    prompt_state.setdefault("previous_code", "")
-    prompt_state.setdefault("plan", "")
-    prompt_state.setdefault("verifier_feedback", "")
-    prompt_state.setdefault("model_path", state.get("model_path", ""))
-    prompt_state.setdefault("target_column", state.get("target_column", ""))
-    prompt_state.setdefault("numeric_columns", state.get("numeric_columns", "[]"))
-    prompt_state.setdefault("categorical_columns", state.get("categorical_columns", "[]"))
-    prompt_state.setdefault("n_classes", state.get("n_classes", ""))
-    prompt_state.setdefault("train_shape", state.get("train_shape", ""))
-    prompt_state.setdefault("task_type", state.get("task_type", ""))
-    prompt_state.setdefault("submit_ok", state.get("submit_ok", False))
-    prompt_state.setdefault("public_score", state.get("public_score", "N/A"))
-    prompt_state.setdefault("private_score", state.get("private_score", "N/A"))
-    prompt_state.setdefault("train_path", state.get("train_path", ""))
-    prompt_state.setdefault("test_path", state.get("test_path", ""))
-    prompt_state.setdefault(
-        "sample_submission_path", state.get("sample_submission_path", "")
-    )
-    prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
-    prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
-    prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
-    prompt_state.setdefault("improvement_hint", state.get("improvement_hint", ""))
-    return prompt_state
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +227,7 @@ _VERIFIER_SYSTEM = (
 )
 
 
-_MAX_AGENT_STEPS = 12
+_MAX_AGENT_STEPS = 8
 
 
 def _invoke_agent(llm, tools: list, system_prompt: str, user_message: str) -> str:
