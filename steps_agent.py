@@ -242,8 +242,7 @@ def _inject_rag_with_mode(state: dict, *, intent_query: str, code_sketch: str, l
         search_type=state.get("rag_search_type", "hybrid"),
         section_filter=None,
     )
-    _log("RAG query mode for %s step: %s", log_label, query_mode)
-    _log("RAG query for %s step: %s", log_label, rag_query)
+
     return state
 
 
