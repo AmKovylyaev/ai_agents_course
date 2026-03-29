@@ -92,11 +92,21 @@ def run_pipeline() -> dict[str, Any]:
     local_metrics = state.get("local_metrics", {})
     if cfg.logger and local_metrics:
         cfg.logger.info("Local evaluation metrics:")
-        for metric_name, metric_value in local_metrics.items():
-            if isinstance(metric_value, float):
-                cfg.logger.info("  %s: %.4f", metric_name, metric_value)
-            else:
-                cfg.logger.info("  %s: %s", metric_name, metric_value)
+        for split_name in ("train", "val"):
+            split_m = local_metrics.get(split_name)
+            if isinstance(split_m, dict):
+                cfg.logger.info("  [%s]", split_name)
+                for k, v in split_m.items():
+                    if isinstance(v, (int, float)):
+                        cfg.logger.info("    %s: %.4f", k, v)
+                    else:
+                        cfg.logger.info("    %s: %s", k, v)
+        if "train" not in local_metrics and "val" not in local_metrics:
+            for k, v in local_metrics.items():
+                if isinstance(v, (int, float)):
+                    cfg.logger.info("  %s: %.4f", k, v)
+                else:
+                    cfg.logger.info("  %s: %s", k, v)
 
     # -- Step 4: Submission -------------------------------------------------
     if cfg.logger:

@@ -50,7 +50,8 @@ Output a numbered step-by-step plan covering:
 
 If there was a previous error or verifier feedback, adjust the plan to avoid the same mistake.
 Output ONLY the plan as a numbered list in plain English.
-Do NOT include any code, code snippets, or code blocks — describe what to do, not how to code it.
+Do NOT include any code, code snippets, or code blocks.
+Be concise — state what to do, not why.
 """
 
 STEP1_EDA_PROMPT = """Follow the plan below. Write complete Python code, then execute it using the run_code tool.
@@ -70,21 +71,21 @@ Previous attempt (if retry):
 
 The state dict MUST be updated with ALL of these keys:
   train_shape, test_shape, columns,
-  numeric_columns (MUST NOT include the target column),
-  categorical_columns (MUST NOT include the target column),
+  numeric_columns (must exclude the target column),
+  categorical_columns (must exclude the target column),
   target_column (string), missing_values, n_classes (integer),
   task_type ("regression" or "classification")
 
-Task type detection rule:
-  - If target is numeric AND has >20 unique values (or unique ratio > 5%% of rows): task_type = "regression"
-  - Otherwise: task_type = "classification"
+Task type detection:
+  - If the target is numeric and has many unique values (>20, or unique ratio > 5%% of rows), treat it as regression.
+  - Otherwise, treat it as classification.
 
 Save the EDA report to session_dir/reports/eda_summary.txt.
-Save ONLY these graphs to session_dir/reports/ (use matplotlib, call plt.close() after each):
+Save ONLY these graphs to session_dir/reports/:
   - target_distribution.png — bar chart (classification) or histogram (regression)
   - correlation_heatmap.png — heatmap of numeric feature correlations
   - missing_values.png — bar chart of missing values per column (skip if no missing values)
-Do NOT create per-column histograms, KDE plots, or any other extra graphs.
+Do not create per-column histograms, KDE plots, or other extra graphs.
 
 IMPORTANT: You MUST call the run_code tool with your complete code. Do NOT just output the code as text.
 """
@@ -132,7 +133,7 @@ EDA results from step 1 (available in state):
 Context:
 - Train data is at TRAIN_DATA_PATH
 - Outputs go to SESSION_DIR
-- Train/val split: test_size={train_sample_frac}, random_state=42
+- Train/val split fraction: {train_sample_frac} (random_state=42)
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
 
@@ -143,31 +144,26 @@ IMPORTANT — Use ALL available columns with appropriate encoding:
   * Low-cardinality categoricals (≤50 unique): SimpleImputer(strategy="most_frequent") → OneHotEncoder(handle_unknown="ignore", sparse_output=False)
   * High-cardinality categoricals (>50 unique): SimpleImputer(strategy="constant", fill_value="__missing__") → OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
 
-Choose a model based on task_type:
-- If REGRESSION:
-  * RandomForestRegressor(n_estimators=100, random_state=42) — fast, solid default
-  * Use regression metrics: RMSE, MAE, R²
-- If CLASSIFICATION:
-  * RandomForestClassifier(n_estimators=100, random_state=42) — fast, solid default
-  * Use classification metrics: accuracy, precision, recall, f1
+Choose a model appropriate for the task_type. Consider the data size, number of features, and the nature of the target. Training must complete within 2 minutes.
 
 Save the ENTIRE Pipeline object (preprocessing + model) to SESSION_DIR/models/pipeline.joblib
 
 Output a numbered step-by-step plan covering:
-1. Load data from TRAIN_DATA_PATH
-2. Target column identification; drop target from X
-3. Splitting numeric vs categorical feature columns (from X, NOT from the full DataFrame)
-4. Splitting categoricals into low-cardinality (≤50 unique) and high-cardinality (>50)
-5. Building the ColumnTransformer: numeric, low-card OneHotEncoder, high-card OrdinalEncoder
-6. Model selection based on task_type and hyperparameters (must train in <2 min)
-7. Assembling the full Pipeline (preprocessor + model)
-8. Train/val split (test_size={train_sample_frac}), fitting, and metric reporting
-9. Saving the pipeline to SESSION_DIR/models/pipeline.joblib
-10. State dict keys to update
+1. Load data
+2. Identify and separate the target column
+3. Target transformation (if regression)
+4. Classify feature columns by type and cardinality
+5. Design the preprocessing (ColumnTransformer)
+6. Choose a model
+7. Assemble the full Pipeline (preprocessor + model)
+8. Split, fit, and report initial metrics
+9. Save the pipeline
+10. State dict keys to update (including target_transform)
 
 If there was a previous error or verifier feedback, adjust the plan accordingly.
 Output ONLY the plan as a numbered list in plain English.
-Do NOT include any code, code snippets, or code blocks — describe what to do, not how to code it.
+Do NOT include any code, code snippets, or code blocks.
+Be concise — state what to do, not why.
 """
 
 STEP2_TRAIN_PROMPT = """Follow the plan below. Write complete Python code, then execute it using the run_code tool.
@@ -178,7 +174,7 @@ Plan:
 Paths:
 - Train data: {train_path}
 - Session directory: {session_dir}
-- Train/val split: test_size={train_sample_frac}, random_state=42
+- Train/val split fraction: {train_sample_frac} (random_state=42)
 
 EDA results:
 - Numeric columns: {numeric_columns}
@@ -192,14 +188,14 @@ Previous attempt (if retry):
 - Previous code: {previous_code}
 - Verifier feedback: {verifier_feedback}
 
-Hard constraints:
-- FIRST drop the target column from the DataFrame to get X, then derive numeric_cols and categorical_cols from X (do NOT trust the EDA lists blindly — they may include the target). Filter: numeric_cols = [c for c in numeric_cols if c in X.columns]; same for categorical_cols.
-- Build a sklearn Pipeline (ColumnTransformer + model) — the ENTIRE pipeline must be saved as a single joblib file to session_dir/models/pipeline.joblib.
-- Fit on raw DataFrame columns (do NOT pre-transform before passing to pipeline).
-- Choose model based on task_type:
-  * regression → RandomForestRegressor; print RMSE, MAE, R²
-  * classification → RandomForestClassifier; print accuracy, precision, recall, f1
-- Update state dict with: target_column, model_path, X_train_shape, X_val_shape, model_type, task_type
+Requirements:
+- Drop the target column first, then verify which EDA-reported feature columns actually exist in the DataFrame. Only use columns present in the data.
+- For regression: apply log1p to the target before fitting and set state["target_transform"] = "log1p".
+- Build a sklearn Pipeline (ColumnTransformer + model) and save the entire pipeline to session_dir/models/pipeline.joblib.
+- The pipeline must handle raw DataFrame columns directly (all preprocessing inside the pipeline).
+- Do not define custom transformer classes or create separate Python modules. Use only well-known library components (sklearn, catboost, xgboost, lightgbm, etc.) so the saved pipeline loads cleanly in any process.
+- Print metrics after fitting.
+- Update state dict with: target_column, model_path, X_train_shape, X_val_shape, model_type, task_type, target_transform.
 
 IMPORTANT: You MUST call the run_code tool with your complete code. Do NOT just output the code as text.
 """
@@ -222,15 +218,14 @@ Context:
 
 Verification checklist:
 1. Call check_state_completeness — is model_path populated?
-2. Call check_model_file — does the pipeline file exist and is it loadable with a predict() method?
+2. Call check_model_file — does the pipeline file exist and is it loadable?
 3. Use read_session_file to inspect the saved code if needed
 
-Common pitfalls to check for in the code:
-- Not using ColumnTransformer / Pipeline correctly
-- Including the target column in feature columns
-- sparse_output not set to False in OneHotEncoder
-- Not saving the full pipeline (only saving the model)
-- Using a Classifier for regression or a Regressor for classification
+Watch for:
+- Target column included in feature columns
+- Pipeline not saved as a complete object (only the model saved separately)
+- Custom transformer classes that break serialisation
+- Model type mismatched with task_type (e.g. classifier for regression)
 
 Based on tool results, provide your verdict:
 - If ALL checks pass: summarize what passed, state "APPROVED"
@@ -250,28 +245,32 @@ Context:
 - Task type: {task_type}
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
+- Improvement hints from previous judge (if any): {improvement_hint}
 
-Key point:
-- The saved pipeline.joblib contains the FULL sklearn Pipeline (ColumnTransformer + model).
-- You do NOT need to preprocess the data manually — just pass raw DataFrame columns to pipeline.predict().
-- Reproduce the exact train/val split: train_test_split(test_size=TRAIN_SAMPLE_FRAC, random_state=42).
+Key points:
+- The saved pipeline already includes all preprocessing — pass raw feature columns directly.
+- Reproduce the exact same train/val split used during training (fraction {train_sample_frac}, random_state=42).
+- If the target was log-transformed during training (state["target_transform"] == "log1p"), apply the same transformation to the true targets before splitting, then inverse-transform both predictions and targets before computing metrics. All metrics should be on the original scale.
 
 Output a numbered step-by-step plan covering:
-1. Load the pipeline from MODEL_PATH
-2. Load the training data from TRAIN_DATA_PATH
-3. Identify target column, separate X and y
-4. Recreate the train/val split (test_size=TRAIN_SAMPLE_FRAC, random_state=42) to get the validation set
-5. Call pipeline.predict(X_val) — NO manual preprocessing
-6. Compute metrics based on task_type:
-   - If REGRESSION: RMSE, MAE, R²
-   - If CLASSIFICATION: accuracy, precision (macro), recall (macro), f1 (macro)
-7. Save metrics dict to SESSION_DIR/reports/local_metrics.json
-8. Print all metrics clearly
-9. Update state dict with local_metrics
+1. Load the pipeline and the training data
+2. Separate features and target
+3. Handle target transformation if applicable (to reproduce the same split)
+4. Recreate the train/val split
+5. Predict on both train and val sets
+6. Inverse-transform predictions and targets if needed
+7. Compute appropriate metrics for both train and val sets based on task_type
+   - Regression: MSE, MAE, R²
+   - Classification: accuracy, precision (macro), recall (macro), f1 (macro)
+8. Store as a nested dict with "train" and "val" sub-dicts
+9. Save metrics to SESSION_DIR/reports/local_metrics.json
+10. Print all metrics clearly
+11. Update state dict with local_metrics
 
 If there was a previous error or verifier feedback, adjust the plan accordingly.
 Output ONLY the plan as a numbered list in plain English.
-Do NOT include any code, code snippets, or code blocks — describe what to do, not how to code it.
+Do NOT include any code, code snippets, or code blocks.
+Be concise — state what to do, not why.
 """
 
 STEP3_EVAL_PROMPT = """Follow the plan below. Write complete Python code, then execute it using the run_code tool.
@@ -285,22 +284,23 @@ Paths:
 - Session directory: {session_dir}
 - Target column: {target_column}
 - Task type: {task_type}
-- Train/val split: test_size={train_sample_frac}, random_state=42
+- Train/val split fraction: {train_sample_frac} (random_state=42)
 
 Previous attempt (if retry):
 - Error: {last_error}
 - Previous code: {previous_code}
 - Verifier feedback: {verifier_feedback}
 
-Hard constraints:
-- The saved pipeline.joblib is a FULL sklearn Pipeline — pass RAW DataFrame columns to pipeline.predict(), do NOT manually preprocess.
-- Reproduce the exact train/val split: train_test_split(test_size={train_sample_frac}, random_state=42).
-- Save metrics to session_dir/reports/local_metrics.json.
-- Compute metrics based on task_type:
-  * If regression: compute rmse (root mean squared error), mae (mean absolute error), r2 (R² score).
-    Store as dict with keys: "rmse", "mae", "r2".
-  * If classification: compute accuracy, precision_score(average="macro"), recall_score(average="macro"), f1_score(average="macro").
-    Store as dict with keys: "accuracy", "precision", "recall", "f1".
+Requirements:
+- The saved pipeline handles all preprocessing — pass raw feature columns directly.
+- Reproduce the exact train/val split (fraction {train_sample_frac}, random_state=42).
+- If state["target_transform"] == "log1p", apply the same log1p to targets before splitting (to get identical indices), then inverse-transform both predictions and true targets before computing metrics. All metrics must be on the original scale.
+- Predict on BOTH train and val sets.
+- Compute appropriate metrics for the task_type:
+  * Regression: MSE, MAE, R² (keys: "mse", "mae", "r2")
+  * Classification: accuracy, precision, recall, f1 (macro average; keys: "accuracy", "precision", "recall", "f1")
+- Store as nested dict: {{"train": {{...}}, "val": {{...}}}}
+- Save to session_dir/reports/local_metrics.json.
 - Print all metrics clearly.
 - Update state dict with: local_metrics
 
@@ -328,12 +328,14 @@ Verification checklist:
 1. Call check_state_completeness — is local_metrics populated?
 2. Call check_metrics — are all expected metrics present and valid?
 3. Use read_session_file to check that local_metrics.json was saved to session_dir/reports/
+4. Verify local_metrics has both "train" and "val" sub-dicts with the correct metric keys
 
-Common pitfalls:
-- Manually preprocessing data instead of passing raw columns to pipeline.predict()
-- Wrong data split reproduction (different random_state or fraction)
-- Dropping columns that the pipeline expects
-- Using classification metrics for a regression task or vice versa
+Watch for:
+- Manual preprocessing instead of using the pipeline directly
+- Wrong split reproduction (different random_state or fraction)
+- Metrics computed on transformed scale instead of original scale
+- Wrong metric type for the task (classification metrics for regression or vice versa)
+- Missing train or val metrics (both are required)
 
 Based on tool results, provide your verdict:
 - If ALL checks pass: summarize what passed, state "APPROVED"
@@ -349,7 +351,7 @@ STEP4_PLANNER_PROMPT = """You are an ML engineering planner. Create a concise pl
 Context:
 - Saved pipeline (preprocessing + model) is at MODEL_PATH
 - Test data is at TEST_DATA_PATH
-- Sample submission is at SAMPLE_SUBMISSION_PATH (defines the EXACT output format — same columns, same order, same number of rows)
+- Sample submission is at SAMPLE_SUBMISSION_PATH (defines the exact output format)
 - Target column name: {target_column}
 - Task type: {task_type}
 - Outputs go to SESSION_DIR
@@ -357,25 +359,25 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 
 Key points:
-- The saved pipeline.joblib contains the FULL sklearn Pipeline (ColumnTransformer + model).
-- Pass raw test DataFrame feature columns to pipeline.predict() — drop the target column from test data if present.
-- The output submission MUST have EXACTLY the same columns as SAMPLE_SUBMISSION_PATH — no extra columns, no missing columns.
+- The pipeline handles all preprocessing — pass raw feature columns directly.
+- If the target was log-transformed during training (state["target_transform"] == "log1p"), inverse-transform the predictions to restore the original scale.
+- The submission must match the sample submission exactly: same columns, same order, same number of rows.
 
 Output a numbered step-by-step plan covering:
-1. Load SAMPLE_SUBMISSION_PATH first — read its column names and row count
-2. Load the pipeline from MODEL_PATH
-3. Load test data from TEST_DATA_PATH
-4. Drop the target column from test data if it exists
-5. Call pipeline.predict(X_test) — NO manual preprocessing
-6. Build output DataFrame with ONLY the columns from the sample submission
-7. Replace the prediction column (last column of sample) with your predictions
-8. Verify output has same columns and row count as sample — assert this
-9. Save to SESSION_DIR/submission.csv (index=False)
-10. Update state dict
+1. Load the sample submission to learn the expected format
+2. Load the pipeline and the test data
+3. Remove the target column from test data if present
+4. Generate predictions using the pipeline
+5. Inverse-transform predictions if target was log-transformed
+6. Assemble the output DataFrame matching the sample submission format
+7. Verify column names and row count match the sample
+8. Save to SESSION_DIR/submission.csv
+9. Update state dict
 
 If there was a previous error or verifier feedback, adjust the plan accordingly.
 Output ONLY the plan as a numbered list in plain English.
-Do NOT include any code, code snippets, or code blocks — describe what to do, not how to code it.
+Do NOT include any code, code snippets, or code blocks.
+Be concise — state what to do, not why.
 """
 
 STEP4_SUBMISSION_PROMPT = """Follow the plan below. Write complete Python code, then execute it using the run_code tool.
@@ -396,13 +398,13 @@ Previous attempt (if retry):
 - Previous code: {previous_code}
 - Verifier feedback: {verifier_feedback}
 
-Hard constraints:
-- The saved pipeline.joblib is a FULL sklearn Pipeline — pass RAW DataFrame columns to pipeline.predict(), do NOT manually preprocess.
-- Drop the target column ("{target_column}") from test data before predicting — use errors="ignore" since test data may not have this column.
-- Load sample_submission.csv FIRST to get its exact column names.
-- The output CSV MUST contain EXACTLY the same columns as sample_submission.csv — no extra columns, no missing columns. Use: out_df = sample[sample.columns].copy(), then replace the last column with predictions.
-- Assert that output has the same number of columns and rows as the sample before saving.
-- Save to session_dir/submission.csv with index=False.
+Requirements:
+- The pipeline handles all preprocessing — pass raw feature columns directly.
+- Remove the target column from test data before predicting (it may not be present, so handle gracefully).
+- If state["target_transform"] == "log1p", the pipeline outputs log-scale values — inverse-transform predictions to restore the original scale.
+- Load the sample submission first to learn the expected column names and row count.
+- The output CSV must match the sample submission exactly: same columns, same order, same number of rows. Verify this before saving.
+- Save to session_dir/submission.csv without the index.
 - Update state dict with: submission_path
 
 IMPORTANT: You MUST call the run_code tool with your complete code. Do NOT just output the code as text.
@@ -431,10 +433,10 @@ Verification checklist:
 2. Call check_submission — does the submission CSV match the sample format (same columns, same row count, no NaN predictions)?
 3. Use read_session_file to spot-check the submission file if needed
 
-Common pitfalls:
-- Manually preprocessing instead of using pipeline.predict()
-- Including/excluding wrong columns (target column in test data, ID column)
-- Format mismatch with sample_submission.csv
+Watch for:
+- Column or row count mismatch with the sample submission
+- NaN or missing predictions
+- Predictions still in log-scale when target was log-transformed
 
 Based on tool results, provide your verdict:
 - If ALL checks pass: summarize what passed, state "APPROVED"
@@ -449,27 +451,23 @@ STEP7_REPORT_PROMPT = """You are an ML engineer. Write Python code to generate a
 
 Context:
 - Session directory: {session_dir}
-- EDA insights available in: session_dir/reports/eda_summary.txt
-- Local metrics available in: session_dir/reports/local_metrics.json
+- EDA insights: session_dir/reports/eda_summary.txt
+- Local metrics: session_dir/reports/local_metrics.json
 - Task type: {task_type}
 - Submission status: {submit_ok}
 - Kaggle scores: public={public_score}, private={private_score}
 
 Requirements:
-1. Load EDA summary from file if exists
-2. Load local metrics from file if exists
-3. Compile all results into a structured report
-4. Save as JSON: session_dir/reports/final_report.json
-5. Save as readable text: session_dir/reports/final_report.txt
-6. Update state dict with: report_path (path to final_report.txt)
-7. Include in the report:
-   - Task type (regression or classification)
+1. Load EDA summary and local metrics from their files (if they exist)
+2. Compile all results into a structured report covering:
+   - Task type
    - EDA insights
    - Model parameters
-   - Local validation metrics
+   - Local validation metrics (both train and val if available)
    - Kaggle submission results
    - Lessons learned and next steps
+3. Save as JSON (session_dir/reports/final_report.json) and as readable text (session_dir/reports/final_report.txt)
+4. Update state dict with: report_path
 
-Output ONLY executable Python code in a ```python code block.
-Use json, pathlib.
+Output ONLY executable Python code.
 """

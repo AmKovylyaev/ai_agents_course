@@ -25,7 +25,6 @@ from typing import Any
 import config as cfg
 from executor import (
     create_step_chain,
-    extract_code_block,
     validate_code,
     execute_code,
 )
@@ -68,6 +67,7 @@ def _build_prompt_state(state: dict) -> dict:
     prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
     prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
     prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
+    prompt_state.setdefault("improvement_hint", state.get("improvement_hint", ""))
     return prompt_state
 
 
