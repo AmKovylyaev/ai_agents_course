@@ -12,7 +12,7 @@ from typing import Any
 try:
     from _model_config import model_llm, model_embedding
 except ImportError:
-    model_llm = "z-ai/glm-4.7-flash"
+    model_llm = "openai/gpt-oss-120b"
     model_embedding = "google/gemini-embedding-001"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -25,8 +25,13 @@ SAMPLE_SUBMISSION_FILE = "sample_submition.csv"
 
 COMPETITION = os.getenv("KAGGLE_COMPETITION", "mws-ai-agents-2026")
 
-TRAIN_SAMPLE_FRAC = 0.2
+# TRAIN_SAMPLE_PCT: percentage of all training data to use (for lightweight runs).
+#   100 = use all data, 20 = use 20% of data.
 TRAIN_SAMPLE_PCT = 100
+
+# TRAIN_SAMPLE_FRAC: fraction of the (subsetted) training data held out for validation.
+#   0.2 = 80% train / 20% validation split.
+TRAIN_SAMPLE_FRAC = 0.2
 
 logger: logging.Logger | None = None
 
@@ -45,6 +50,10 @@ def setup_logging(session_dir: Path) -> None:
         ],
         force=True,
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
     logger = logging.getLogger(__name__)
     logger.info("Logging to %s", log_file)
 
@@ -55,9 +64,8 @@ def create_session_dir() -> Path:
     session_dir = ARTIFACTS_DIR / "sessions" / timestamp
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    (session_dir / "code").mkdir(exist_ok=True)
-    (session_dir / "models").mkdir(exist_ok=True)
-    (session_dir / "reports").mkdir(exist_ok=True)
+    for sub in ("code", "models", "reports", "plans", "feedback"):
+        (session_dir / sub).mkdir(exist_ok=True)
 
     return session_dir
 
@@ -89,7 +97,11 @@ def get_llm():
 
 
 def load_data_subset(state: dict) -> dict:
-    """Load data files; use only TRAIN_SAMPLE_FRAC of train for speed."""
+    """Load data, subset train to TRAIN_SAMPLE_PCT%, save subset to session dir.
+
+    After this function, state["train_path"] points to the subsetted CSV
+    so all downstream steps just load it directly — no sampling needed.
+    """
     try:
         import pandas as pd
     except ImportError:
@@ -102,28 +114,31 @@ def load_data_subset(state: dict) -> dict:
     test_path = Path(state["test_path"])
     if test_path.exists():
         test_df = pd.read_csv(test_path)
-        state["test_df"] = test_df
-        state["test_shape"] = test_df.shape
+        state["test_shape"] = list(test_df.shape)
         if logger:
             logger.info("Loaded %d test samples", len(test_df))
     else:
         if logger:
             logger.warning("Test file not found: %s", test_path)
 
-    train_path = Path(state["train_path"])
-    if train_path.exists():
-        train_df_full = pd.read_csv(train_path)
-        train_df = train_df_full.sample(frac=TRAIN_SAMPLE_FRAC, random_state=42)
-        state["train_df"] = train_df
-        state["train_df_full"] = train_df_full
-        state["train_shape"] = train_df.shape
+    train_path_orig = Path(state["train_path"])
+    if train_path_orig.exists():
+        train_df_full = pd.read_csv(train_path_orig)
+        train_df = train_df_full.sample(frac=TRAIN_SAMPLE_PCT / 100, random_state=42)
+
+        subset_path = Path(state["session_dir"]) / "train_subset.csv"
+        train_df.to_csv(subset_path, index=False)
+        state["train_path"] = str(subset_path)
+        state["train_path_original"] = str(train_path_orig)
+        state["train_shape"] = list(train_df.shape)
+
         if logger:
             logger.info(
-                "Loaded %d train samples (%d%% of %d)",
-                len(train_df), TRAIN_SAMPLE_PCT, len(train_df_full),
+                "Subsetted %d train samples (%d%% of %d) → %s",
+                len(train_df), TRAIN_SAMPLE_PCT, len(train_df_full), subset_path,
             )
     else:
         if logger:
-            logger.warning("Train file not found: %s", train_path)
+            logger.warning("Train file not found: %s", train_path_orig)
 
     return state
