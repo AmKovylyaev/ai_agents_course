@@ -25,6 +25,7 @@ Requirements (in .env at project root):
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import config as cfg
@@ -39,21 +40,48 @@ from steps_agent import (
 from steps_kaggle import step5_submit, step6_wait_results
 
 
+def _log(msg: str, *args, level: str = "info") -> None:
+    if cfg.logger:
+        getattr(cfg.logger, level)(msg, *args)
+
+
+def _log_metrics(local_metrics: dict) -> None:
+    if not cfg.logger or not local_metrics:
+        return
+    cfg.logger.info("Local evaluation metrics:")
+    for split in ("train", "val"):
+        split_m = local_metrics.get(split)
+        if isinstance(split_m, dict):
+            cfg.logger.info("  [%s]", split)
+            for k, v in split_m.items():
+                if isinstance(v, (int, float)):
+                    cfg.logger.info("    %s: %.4f", k, v)
+                else:
+                    cfg.logger.info("    %s: %s", k, v)
+    if "train" not in local_metrics and "val" not in local_metrics:
+        for k, v in local_metrics.items():
+            if isinstance(v, (int, float)):
+                cfg.logger.info("  %s: %.4f", k, v)
+            else:
+                cfg.logger.info("  %s: %s", k, v)
+
+
+def _setup_iteration_dirs(session_dir: Path, iteration: int) -> dict[str, str]:
+    """Create per-iteration subdirectories and return path strings."""
+    iter_dir = session_dir / f"iter_{iteration}"
+    iter_dir.mkdir(exist_ok=True)
+    return {"iter_dir": str(iter_dir)}
+
+
 def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
     """Execute the full agent pipeline and return the final state dict."""
     session_dir = cfg.create_session_dir()
-
     cfg.setup_logging(session_dir)
-    if cfg.logger:
-        cfg.logger.info("Session directory: %s", session_dir)
+    _log("Session directory: %s", session_dir)
 
     state: dict[str, Any] = {
         "session_dir": str(session_dir),
-        "code_dir": str(session_dir / "code"),
-        "models_dir": str(session_dir / "models"),
         "reports_dir": str(session_dir / "reports"),
-        "plans_dir": str(session_dir / "plans"),
-        "feedback_dir": str(session_dir / "feedback"),
         "data_dir": str(cfg.DATA_DIR),
         "train_path": str(cfg.DATA_DIR / cfg.TRAIN_FILE),
         "test_path": str(cfg.DATA_DIR / cfg.TEST_FILE),
@@ -65,117 +93,83 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
         "target_column": "",
     }
 
-    if cfg.logger:
-        cfg.logger.info("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
+    _log("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
 
-    iteration = 0
     best_state = None
     best_metric = None
 
-    while iteration < max_iterations:
-        iteration += 1
-        if cfg.logger:
-            cfg.logger.info("=" * 60)
-            cfg.logger.info("Refinement iteration %d/%d", iteration, max_iterations)
+    for iteration in range(1, max_iterations + 1):
+        _log("=" * 60)
+        _log("Refinement iteration %d/%d", iteration, max_iterations)
 
-        state["improvement_hint"] = state.get("eda_improvement_hint", "")
+        iter_paths = _setup_iteration_dirs(session_dir, iteration)
+        state.update(iter_paths)
+        state["iteration"] = iteration
 
         # -- Step 1: EDA --------------------------------------------------------
-        if cfg.logger:
-            cfg.logger.info("Running step1_eda...")
+        _log("Step 1 — EDA")
+        state["improvement_hint"] = state.get("eda_improvement_hint", "")
         state = step1_eda_agent(state)
 
-        state["improvement_hint"] = state.get("train_improvement_hint", "")
-
         # -- Step 2: Train ------------------------------------------------------
-        if cfg.logger:
-            cfg.logger.info("Running step2_train...")
+        _log("Step 2 — Train")
+        state["improvement_hint"] = state.get("train_improvement_hint", "")
         state = step2_train_agent(state)
 
         # -- Step 3: Eval -------------------------------------------------------
-        if cfg.logger:
-            cfg.logger.info("Running step3_eval...")
+        _log("Step 3 — Eval")
         state = step3_local_eval_agent(state)
 
-        local_metrics = state.get("local_metrics", {})
-        if cfg.logger and local_metrics:
-            cfg.logger.info("Local evaluation metrics:")
-            for split_name in ("train", "val"):
-                split_m = local_metrics.get(split_name)
-                if isinstance(split_m, dict):
-                    cfg.logger.info("  [%s]", split_name)
-                    for k, v in split_m.items():
-                        if isinstance(v, (int, float)):
-                            cfg.logger.info("    %s: %.4f", k, v)
-                        else:
-                            cfg.logger.info("    %s: %s", k, v)
-            if "train" not in local_metrics and "val" not in local_metrics:
-                for k, v in local_metrics.items():
-                    if isinstance(v, (int, float)):
-                        cfg.logger.info("  %s: %.4f", k, v)
-                    else:
-                        cfg.logger.info("  %s: %s", k, v)
+        _log_metrics(state.get("local_metrics", {}))
 
         # -- Judge --------------------------------------------------------------
-        if cfg.logger:
-            cfg.logger.info("Running step_judge...")
+        _log("Judge — evaluating results...")
         state = step_judge_result_agent(state)
 
-        val_metrics = local_metrics.get("val", local_metrics)
-        current_mse = val_metrics.get("mse")
+        val_metrics = state.get("local_metrics", {}).get("val", state.get("local_metrics", {}))
+        current_mse = val_metrics.get("mse") if isinstance(val_metrics, dict) else None
         if current_mse is not None:
             if best_metric is None or current_mse < best_metric:
                 best_metric = current_mse
                 best_state = dict(state)
-                if cfg.logger:
-                    cfg.logger.info("New best model found with MSE=%.4f", current_mse)
+                _log("New best model (MSE=%.4f)", current_mse)
 
         decision = state.get("verification_decision", "NEED_REFINEMENT")
         if decision == "SUFFICIENT":
-            if cfg.logger:
-                cfg.logger.info("Judge decision: SUFFICIENT — stopping refinement loop.")
+            _log("Judge: SUFFICIENT — stopping refinement loop.")
             break
-        else:
-            if cfg.logger:
-                cfg.logger.info("Judge decision: NEED_REFINEMENT — continuing loop.")
+        _log("Judge: NEED_REFINEMENT — continuing loop.")
 
     if best_state is not None:
-        if cfg.logger:
-            cfg.logger.info("Using best model from iteration with MSE=%.4f", best_metric)
+        _log("Using best model from iterations (MSE=%.4f)", best_metric)
         state.update(best_state)
     else:
-        if cfg.logger:
-            cfg.logger.warning("No valid iteration, using last state.")
+        _log("No valid metric tracked, using last state.", level="warning")
 
     # -- Step 4: Submission -------------------------------------------------
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step4_submission...")
+    _log("=" * 60)
+    _log("Step 4 — Submission")
     state = step4_submission_agent(state)
 
     # -- Step 5: Submit to Kaggle -------------------------------------------
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step5_submit...")
+    _log("=" * 60)
+    _log("Step 5 — Submit to Kaggle")
     state = step5_submit(state)
 
     # -- Step 6: Wait / confirm ---------------------------------------------
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step6_wait_results...")
+    _log("=" * 60)
+    _log("Step 6 — Wait for results")
     state = step6_wait_results(state)
 
     # -- Step 7: Report -----------------------------------------------------
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Running step7_report...")
+    _log("=" * 60)
+    _log("Step 7 — Report")
     state = step7_report_agent(state)
 
-    if cfg.logger:
-        cfg.logger.info("=" * 60)
-        cfg.logger.info("Pipeline finished. Session: %s", session_dir)
-        cfg.logger.info("Report: %s", state.get("report_path", "N/A"))
+    _log("=" * 60)
+    _log("Pipeline finished. Session: %s", session_dir)
+    _log("Report: %s", state.get("report_path", "N/A"))
 
     return state
 

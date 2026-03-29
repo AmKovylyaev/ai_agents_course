@@ -309,7 +309,7 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
-def check_code_safety(code: str) -> GuardrailResult:
+def check_code_safety(code: str, *, quiet: bool = False) -> GuardrailResult:
     """Reject generated code containing dangerous operations."""
     violations: list[str] = []
     for pattern, description in _DANGEROUS_PATTERNS:
@@ -321,7 +321,8 @@ def check_code_safety(code: str) -> GuardrailResult:
         result = GuardrailResult(False, f"Unsafe code detected: {', '.join(violations)}")
     else:
         result = GuardrailResult(True, "No dangerous patterns found")
-    _log(result, "code_safety")
+    if not quiet:
+        _log(result, "code_safety")
     return result
 
 

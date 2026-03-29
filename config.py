@@ -50,9 +50,16 @@ def setup_logging(session_dir: Path) -> None:
         ],
         force=True,
     )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
+    for noisy in (
+        "httpx", "httpcore", "openai",
+        "langchain", "langchain_core", "langchain_openai",
+        "langgraph", "langsmith",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    from langchain_core.globals import set_verbose, set_debug
+    set_verbose(False)
+    set_debug(False)
 
     logger = logging.getLogger(__name__)
     logger.info("Logging to %s", log_file)
@@ -64,7 +71,7 @@ def create_session_dir() -> Path:
     session_dir = ARTIFACTS_DIR / "sessions" / timestamp
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    for sub in ("code", "models", "reports", "plans", "feedback"):
+    for sub in ("models", "reports"):
         (session_dir / sub).mkdir(exist_ok=True)
 
     return session_dir

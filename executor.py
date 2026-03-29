@@ -66,8 +66,7 @@ from pathlib import Path
 with open("{state_file}", "r", encoding="utf-8") as f:
     state = json.load(f)
 
-for key in ["session_dir", "code_dir", "models_dir", "reports_dir", "plans_dir",
-            "feedback_dir", "data_dir",
+for key in ["session_dir", "models_dir", "reports_dir", "data_dir",
             "train_path", "test_path", "sample_submission_path", "model_path", "submission_path"]:
     if key in state and isinstance(state[key], str):
         state[key] = Path(state[key])
@@ -104,6 +103,17 @@ print("STATE_SAVED_SUCCESSFULLY")
         env = os.environ.copy()
         project_dir = str(cfg.SCRIPT_DIR)
         env["PYTHONPATH"] = project_dir + os.pathsep + env.get("PYTHONPATH", "")
+        import shutil, platform
+        if platform.system() == "Darwin" and shutil.which("brew"):
+            try:
+                prefix = subprocess.check_output(
+                    ["brew", "--prefix", "libomp"], text=True, timeout=5,
+                ).strip()
+                omp_lib = str(Path(prefix) / "lib")
+                if Path(omp_lib).exists():
+                    env["DYLD_LIBRARY_PATH"] = omp_lib + ":" + env.get("DYLD_LIBRARY_PATH", "")
+            except Exception:
+                pass
 
         result = subprocess.run(
             ["python3", path],

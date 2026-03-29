@@ -147,6 +147,9 @@ IMPORTANT — Use ALL available columns with appropriate encoding:
   * High-cardinality categoricals (>50 unique): SimpleImputer(strategy="constant", fill_value="__missing__") → OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
 
 Choose a model appropriate for the task_type. Consider the data size, number of features, and the nature of the target. Training must complete within 2 minutes.
+For the first iteration (no judge feedback), default to CatBoost. On subsequent iterations, try a different model based on judge suggestions.
+
+Available libraries: sklearn, catboost, xgboost, lightgbm, category_encoders, pandas, numpy.
 
 Save the ENTIRE Pipeline object (preprocessing + model) to SESSION_DIR/models/pipeline.joblib
 
@@ -195,7 +198,7 @@ Requirements:
 - For regression: apply log1p to the target before fitting and set state["target_transform"] = "log1p".
 - Build a sklearn Pipeline (ColumnTransformer + model) and save the entire pipeline to session_dir/models/pipeline.joblib.
 - The pipeline must handle raw DataFrame columns directly (all preprocessing inside the pipeline).
-- Do not define custom transformer classes or create separate Python modules. Use only well-known library components (sklearn, catboost, xgboost, lightgbm, etc.) so the saved pipeline loads cleanly in any process.
+- Do not define custom transformer classes or create separate Python modules. Use only well-known library components (sklearn, catboost, xgboost, lightgbm, category_encoders, etc.) so the saved pipeline loads cleanly in any process.
 - Print metrics after fitting.
 - Update state dict with: target_column, model_path, X_train_shape, X_val_shape, model_type, task_type, target_transform.
 
@@ -449,21 +452,19 @@ Based on tool results, provide your verdict:
 # Step – Judge (LLM-as-a-judge, outer refinement loop)
 # ---------------------------------------------------------------------------
 
-STEP_JUDGE_PROMPT = """You are a Senior Data Scientist (Judge). Evaluate the results of an ML experiment.
+STEP_JUDGE_PROMPT = """You are a Judge evaluating ML experiment results. Be extremely concise.
 
-Context:
-- Local Metrics (train and validation): {local_metrics}
-- Code from steps 1-3: {previous_code}
+Metrics (train / val): {local_metrics}
+Model info: {previous_code}
 
-Return a JSON object with exactly these keys:
-- "decision": "SUFFICIENT" or "NEED_REFINEMENT"
-- "reasoning": short explanation
-- "eda_suggestions": specific suggestions for improving EDA (empty string if sufficient)
-- "train_suggestions": specific suggestions for improving model training (empty string if sufficient)
+Rules:
+- SUFFICIENT if val metrics are reasonable and no severe overfitting (train/val gap < 2x).
+- NEED_REFINEMENT otherwise.
+- Each suggestion must be ONE short sentence — a single concrete action, not a list.
+- Do NOT suggest hyperparameter tuning, grid search, or random search.
 
-Output ONLY the JSON object, no extra text.
-Example:
-{{"decision": "NEED_REFINEMENT", "reasoning": "MSE is high relative to baseline", "eda_suggestions": "Extract day-of-week from timestamp columns", "train_suggestions": "Try LightGBM with early stopping"}}
+Output ONLY a JSON object:
+{{"decision": "SUFFICIENT or NEED_REFINEMENT", "reasoning": "one sentence", "eda_suggestions": "one sentence or empty", "train_suggestions": "one sentence or empty"}}
 """
 
 # ---------------------------------------------------------------------------
