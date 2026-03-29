@@ -224,3 +224,13 @@ data/**/*.pdf
 **/2026*
 
 .python-version
+.venv/
+__pycache__/
+*.pyc
+artifacts/
+*.joblib
+*.pkl
+*.bin
+.env
+rag_storage/
+notebook_index/

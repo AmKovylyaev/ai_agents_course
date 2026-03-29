@@ -26,6 +26,7 @@ from prompts import (
     STEP7_REPORT_PROMPT,
     STEP_JUDGE_PROMPT,
 )
+from rag.rag_tools import inject_rag_context_into_state
 from steps_fallback import (
     step1_eda_fallback,
     step2_train_fallback,
@@ -34,11 +35,8 @@ from steps_fallback import (
     step7_report_fallback,
     step_judge_fallback,
 )
+from tools.web_context import inject_web_context_into_state
 
-
-# ---------------------------------------------------------------------------
-# Steps 1–4: three-agent feedback loop
-# ---------------------------------------------------------------------------
 
 def _run_feedback_step(
     step_name: str,
@@ -76,38 +74,180 @@ def _run_feedback_step(
     return state
 
 
+def _inject_eda_context(state: dict) -> dict:
+    state = dict(state)
+    if state.get("rag_enabled", False):
+        query = (
+            "tabular dataset exploratory data analysis notebook; "
+            "dataset loading; column profiling; missing values; "
+            "target detection; task type inference; numeric correlations; "
+            "categorical summary"
+        )
+        state = inject_rag_context_into_state(
+            state=state,
+            query=query,
+            top_k=state.get("rag_top_k", 5),
+            search_type=state.get("rag_search_type", "hybrid"),
+            section_filter=None,
+        )
+        _log("RAG query for EDA step: %s", query)
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            "best practices for tabular exploratory data analysis target detection "
+            "missing values categorical features"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for EDA step: %s", web_query)
+    return state
+
+
+def _inject_train_context(state: dict) -> dict:
+    state = dict(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        query = (
+            f"tabular machine learning notebook for {task_type}; "
+            f"preprocessing categorical and numeric features; "
+            f"columntransformer pipeline; training and evaluation; "
+            f"submission pattern"
+        )
+        state = inject_rag_context_into_state(
+            state=state,
+            query=query,
+            top_k=state.get("rag_top_k", 5),
+            search_type=state.get("rag_search_type", "hybrid"),
+            section_filter=None,
+        )
+        _log("RAG query for training step: %s", query)
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"best practices for tabular {state.get('task_type', 'regression')} "
+            f"with categorical features catboost cross validation"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for training step: %s", web_query)
+    return state
+
+
+def _inject_eval_context(state: dict) -> dict:
+    state = dict(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        query = (
+            f"tabular machine learning notebook for {task_type} evaluation; "
+            f"reproduce train validation split; metrics calculation; "
+            f"pipeline prediction; local validation report"
+        )
+        state = inject_rag_context_into_state(
+            state=state,
+            query=query,
+            top_k=state.get("rag_top_k", 5),
+            search_type=state.get("rag_search_type", "hybrid"),
+            section_filter=None,
+        )
+        _log("RAG query for eval step: %s", query)
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"how to evaluate tabular {state.get('task_type', 'regression')} "
+            f"catboost cross validation metric selection"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for eval step: %s", web_query)
+    return state
+
+
+def _inject_submission_context(state: dict) -> dict:
+    state = dict(state)
+    if state.get("rag_enabled", False):
+        task_type = state.get("task_type", "")
+        query = (
+            f"tabular machine learning notebook for {task_type} submission; "
+            f"load saved pipeline; predict on test dataframe; "
+            f"match sample submission columns and row order; save submission csv"
+        )
+        state = inject_rag_context_into_state(
+            state=state,
+            query=query,
+            top_k=state.get("rag_top_k", 5),
+            search_type=state.get("rag_search_type", "hybrid"),
+            section_filter=None,
+        )
+        _log("RAG query for submission step: %s", query)
+
+    if state.get("web_search_enabled", False):
+        web_query = "kaggle submission csv format regression predict best practices"
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        _log("Web query for submission step: %s", web_query)
+    return state
+
+
 def step1_eda_agent(state: dict) -> dict:
+    state = _inject_eda_context(state)
     return _run_feedback_step(
         "step1_eda",
-        STEP1_PLANNER_PROMPT, STEP1_EDA_PROMPT, STEP1_VERIFIER_PROMPT,
-        step1_eda_fallback, state,
+        STEP1_PLANNER_PROMPT,
+        STEP1_EDA_PROMPT,
+        STEP1_VERIFIER_PROMPT,
+        step1_eda_fallback,
+        state,
         timeout_sec=120,
     )
 
 
 def step2_train_agent(state: dict) -> dict:
+    state = _inject_train_context(state)
     return _run_feedback_step(
         "step2_train",
-        STEP2_PLANNER_PROMPT, STEP2_TRAIN_PROMPT, STEP2_VERIFIER_PROMPT,
-        step2_train_fallback, state,
+        STEP2_PLANNER_PROMPT,
+        STEP2_TRAIN_PROMPT,
+        STEP2_VERIFIER_PROMPT,
+        step2_train_fallback,
+        state,
         timeout_sec=360,
     )
 
 
 def step3_local_eval_agent(state: dict) -> dict:
+    state = _inject_eval_context(state)
     return _run_feedback_step(
         "step3_eval",
-        STEP3_PLANNER_PROMPT, STEP3_EVAL_PROMPT, STEP3_VERIFIER_PROMPT,
-        step3_local_eval_fallback, state,
+        STEP3_PLANNER_PROMPT,
+        STEP3_EVAL_PROMPT,
+        STEP3_VERIFIER_PROMPT,
+        step3_local_eval_fallback,
+        state,
         timeout_sec=120,
     )
 
 
 def step4_submission_agent(state: dict) -> dict:
+    state = _inject_submission_context(state)
     return _run_feedback_step(
         "step4_submission",
-        STEP4_PLANNER_PROMPT, STEP4_SUBMISSION_PROMPT, STEP4_VERIFIER_PROMPT,
-        step4_submission_fallback, state,
+        STEP4_PLANNER_PROMPT,
+        STEP4_SUBMISSION_PROMPT,
+        STEP4_VERIFIER_PROMPT,
+        step4_submission_fallback,
+        state,
         timeout_sec=120,
     )
 

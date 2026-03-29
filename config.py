@@ -19,6 +19,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR / "data"
 ARTIFACTS_DIR = SCRIPT_DIR / "artifacts"
 
+NOTEBOOKS_KB_DIR = SCRIPT_DIR / "notebooks_kb"
+RAG_DIR = SCRIPT_DIR / "artifacts" / "rag"
+RAG_INDEX_DIR = RAG_DIR / "notebook_index"
+
+WEB_SEARCH_ENABLED = True
+WEB_SEARCH_MAX_RESULTS = 3
+
+RAG_ENABLED = True
+RAG_TOP_K = 5
+RAG_SEARCH_TYPE = "hybrid"
+RAG_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 TRAIN_FILE = "train.csv"
 TEST_FILE = "test.csv"
 SAMPLE_SUBMISSION_FILE = "sample_submition.csv"
@@ -75,6 +87,16 @@ def build_prompt_state(state: dict) -> dict:
         "train_sample_frac": TRAIN_SAMPLE_FRAC,
         "train_sample_pct": TRAIN_SAMPLE_PCT,
         "improvement_hint": state.get("improvement_hint", ""),
+        "rag_enabled": state.get("rag_enabled", RAG_ENABLED),
+        "rag_top_k": state.get("rag_top_k", RAG_TOP_K),
+        "rag_search_type": state.get("rag_search_type", RAG_SEARCH_TYPE),
+        "rag_index_dir": state.get("rag_index_dir", str(RAG_INDEX_DIR)),
+        "rag_query": state.get("rag_query", ""),
+        "rag_context": state.get("rag_context", ""),
+        "web_search_enabled": state.get("web_search_enabled", WEB_SEARCH_ENABLED),
+        "web_search_max_results": state.get("web_search_max_results", WEB_SEARCH_MAX_RESULTS),
+        "web_query": state.get("web_query", ""),
+        "web_context": state.get("web_context", ""),
     }
     for k, v in defaults.items():
         prompt_state.setdefault(k, v)

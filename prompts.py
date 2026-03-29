@@ -25,6 +25,17 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 - Feedback from judge (if any): {improvement_hint}
 
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
+
 Output a numbered step-by-step plan covering:
 1. Load the train and test data from the provided paths
 2. Which statistics to compute for ALL columns (shape, dtypes, missing values, unique counts)
@@ -64,6 +75,17 @@ Paths:
 - Train data: {train_path}
 - Test data: {test_path}
 - Session directory: {session_dir}
+
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
 
 Previous attempt (if retry):
 - Error: {last_error}
@@ -139,6 +161,17 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 - Feedback from judge (if any): {improvement_hint}
 
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
+
 IMPORTANT — Use ALL available columns with appropriate encoding:
 - FIRST: drop the target column to get X; derive column lists from X (not from the full DataFrame).
 - Decide how to handle numeric columns (imputation, scaling) and categorical columns (encoding strategy depends on the model and cardinality). Some models (e.g. CatBoost) handle categoricals natively — but CatBoost CANNOT accept NaN in categorical features, so always fill NaN first (e.g. fillna("__missing__") and cast to str).
@@ -188,6 +221,17 @@ EDA results:
 - Target column: {target_column}
 - Number of unique target values: {n_classes}
 - Task type: {task_type}
+
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
 
 Previous attempt (if retry):
 - Error: {last_error}
@@ -257,6 +301,17 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 - Improvement hints from previous judge (if any): {improvement_hint}
 
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
+
 Key points:
 - The saved pipeline already includes all preprocessing — pass raw feature columns directly.
 - Reproduce the exact same train/val split used during training (fraction {train_sample_frac}, random_state=42).
@@ -295,6 +350,17 @@ Paths:
 - Target column: {target_column}
 - Task type: {task_type}
 - Train/val split fraction: {train_sample_frac} (random_state=42)
+
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
 
 Previous attempt (if retry):
 - Error: {last_error}
@@ -368,6 +434,17 @@ Context:
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
 
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
+
 Key points:
 - The saved model may be a sklearn Pipeline or a raw model (e.g. CatBoost). Load with joblib.load().
 - If the model is CatBoost: fill NaN in categorical columns with "__missing__" and cast to str before predict.
@@ -403,6 +480,17 @@ Paths:
 - Session directory: {session_dir}
 - Target column: {target_column}
 - Task type: {task_type}
+
+Notebook RAG context:
+- Query used: {rag_query}
+- Search type: {rag_search_type}
+- Retrieved notebook context:
+{rag_context}
+
+Web search context:
+- Query used: {web_query}
+- Retrieved web context:
+{web_context}
 
 Previous attempt (if retry):
 - Error: {last_error}
