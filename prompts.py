@@ -26,8 +26,11 @@ Context:
 - Feedback from judge (if any): {improvement_hint}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -77,8 +80,11 @@ Paths:
 - Session directory: {session_dir}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -162,8 +168,11 @@ Context:
 - Feedback from judge (if any): {improvement_hint}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -223,8 +232,11 @@ EDA results:
 - Task type: {task_type}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -302,8 +314,11 @@ Context:
 - Improvement hints from previous judge (if any): {improvement_hint}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -352,8 +367,11 @@ Paths:
 - Train/val split fraction: {train_sample_frac} (random_state=42)
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -435,8 +453,11 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
@@ -482,8 +503,11 @@ Paths:
 - Task type: {task_type}
 
 Notebook RAG context:
+- Query mode: {rag_query_mode}
 - Query used: {rag_query}
 - Search type: {rag_search_type}
+- Code sketch used for retrieval:
+{rag_code_sketch}
 - Retrieved notebook context:
 {rag_context}
 
