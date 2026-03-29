@@ -1,182 +1,186 @@
-## Обзор
+# AI Agents for Kaggle Competitions
 
-| Файл | Архитектура | Сложность | Использование LLM |
-|------|-------------|-----------|-------------------|
-| `01_.py` | Линейный пайплайн | Низкая | Опционально (только саммари) |
-| `02_.py` | LLM-генерация кода | Средняя | Генерация кода для каждого шага |
-| `03_.py` | Supervisor мульти-агент | Высокая | Супервизор + 4 рабочих агента |
+An autonomous ML pipeline that uses LLM agents to solve tabular Kaggle competitions end-to-end — from exploratory data analysis to Kaggle submission — without human intervention.
 
----
+## How It Works
 
-## 01_.py — Линейный ML-пайплайн (без агента)
+The system runs a **7-step ML pipeline** where each step is driven by a three-agent loop (Planner → Coder → Verifier). If the LLM is unavailable or all retries fail, deterministic fallbacks ensure the pipeline still completes.
 
-<img src="imgs/agents_1.jpeg" width="500">
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Refinement Loop (1–3 iterations)         │
+│                                                             │
+│   ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+│   │  1. EDA  │───▶│ 2. Train │───▶│ 3. Eval  │──┐          │
+│   └──────────┘    └──────────┘    └──────────┘  │          │
+│        ▲                                         ▼          │
+│        │              ┌──────────┐               │          │
+│        └──────────────│  Judge   │◀──────────────┘          │
+│                       └──────────┘                          │
+│                     SUFFICIENT? ──▶ break                   │
+│                     NEED_REFINEMENT ──▶ next iteration      │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+              ┌──────────────────────────┐
+              │  4. Generate Submission  │
+              │  5. Submit to Kaggle     │
+              │  6. Wait for Results     │
+              │  7. Final Report         │
+              └──────────────────────────┘
+```
 
-Традиционный подход: последовательное выполнение ML-задач без LLM-агентов.
+**Parallel candidate branches** — each refinement iteration launches multiple candidate branches concurrently (default: 3). Each branch independently runs EDA → Train → Eval, and the Judge picks the best result.
 
-### Шаги пайплайна
-1. **EDA** — Загрузка и анализ train/test данных
-2. **Train** — Обучение RandomForest классификатора
-3. **Local Eval** — Оценка модели на валидационной выборке
-4. **Submission** — Генерация submission.csv
-5. **Submit** — Отправка в Kaggle через API
-6. **Wait Results** — Подтверждение отправки (без polling)
-7. **Report** — Генерация финального отчёта
+### Three-Agent Feedback Loop
 
-### Ключевые особенности
-- Простое, детерминированное выполнение
-- Быстро (нет LLM-вызовов для основной логики)
-- Легко отлаживать
-- Опциональные LLM-саммари (если доступен ChatHuggingFace)
+Every code-generation step uses a mini feedback loop with up to 3 retry attempts:
 
-### Запуск
+| Agent | Role |
+|-------|------|
+| **Planner** | Produces a plain-English step-by-step plan (no code) |
+| **Coder** | Writes and executes Python code following the plan (ReAct agent with tools) |
+| **Verifier** | Validates outputs using guardrail tools; returns APPROVED or FAIL with feedback |
+
+On FAIL, the Verifier's feedback is fed back to the Planner for the next attempt.
+
+### RAG & Web Search
+
+The pipeline augments LLM prompts with relevant context from two sources:
+
+- **Notebook RAG** — a local knowledge base of curated ML notebooks and templates (`notebooks_kb/`), indexed with sentence-transformers embeddings + BM25 for hybrid retrieval via FAISS
+- **Web Search** — DuckDuckGo-based search for current best practices, injected into prompts as additional context
+
+## Project Structure
+
+```
+.
+├── main.py                  # Entry point — orchestrates the full pipeline
+├── config.py                # Paths, model settings, logging, data loading
+├── prompts.py               # LLM prompt templates for all pipeline steps
+├── steps_agent.py           # LLM-driven step implementations with fallback logic
+├── steps_fallback.py        # Deterministic fallbacks (no LLM required)
+├── steps_kaggle.py          # Kaggle API interactions (submit, wait for results)
+├── executor.py              # Code extraction, validation, subprocess execution
+├── guardrails.py            # Guardrail checks for state, outputs, and code safety
+├── mini_feedback_loop.py    # Planner → Coder → Verifier LangGraph loop
+├── rag/
+│   ├── indexer.py           # Embedding generation, FAISS/BM25 index construction
+│   ├── retriever_backend.py # Hybrid retrieval (dense + sparse + RRF fusion)
+│   ├── retriever.py         # TF-IDF retrieval with section filtering
+│   ├── notebook_loader.py   # Loads .ipynb, .py, .md, .txt into documents
+│   ├── notebook_chunker.py  # Splits documents into labeled chunks
+│   ├── rag_tools.py         # High-level RAG API: build, search, inject context
+│   ├── embed_index.py       # TF-IDF index build/save/load
+│   └── utils.py             # Shared types (RAGConfig, RetrievedChunk), tokenizers
+├── tools/
+│   ├── web_search_tool.py   # DuckDuckGo HTML search with LangChain @tool
+│   └── web_context.py       # Injects web search results into pipeline state
+├── notebooks_kb/            # Curated ML notebook knowledge base for RAG
+│   ├── *.ipynb              # Reference notebooks (EDA, training, submission, etc.)
+│   ├── *.py                 # Template scripts (CV, blending, train/val split)
+│   └── *.md                 # Notes on metrics, experiment tracking, RAG queries
+├── data/                    # Competition data (gitignored)
+│   ├── train.csv
+│   ├── test.csv
+│   └── sample_submition.csv
+├── artifacts/               # Generated outputs per session (gitignored)
+│   ├── sessions/            # Timestamped session directories
+│   └── rag/                 # Persisted RAG indexes
+├── pyproject.toml
+└── .env                     # API keys (gitignored)
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) package manager
+- An [OpenRouter](https://openrouter.ai/) API key
+- A [Kaggle](https://www.kaggle.com/) account with API credentials
+
+### Installation
+
 ```bash
-.venv/bin/python ai_agents_course/final_project/ai_agent_step_by_step/01_.py
+git clone <repository-url>
+cd ai_agents_course
+
+uv sync
 ```
 
----
+### Configuration
 
-## 02_.py — Агент с LLM-генерацией кода
+Create a `.env` file in the project root:
 
-<img src="imgs/agents_2.jpeg" width="500">
-
-Агентный пайплайн, где LLM генерирует Python-код для каждого шага. Сгенерированный код выполняется в подпроцессах с логикой повторных попыток.
-
-### Шаги пайплайна
-1. **EDA** — LLM генерирует код анализа данных
-2. **Train** — LLM генерирует код обучения модели
-3. **Eval** — LLM генерирует код оценки
-4. **Submission** — LLM генерирует код создания submission
-5. **Submit** — Прямая отправка в Kaggle API (без LLM)
-6. **Wait Results** — Подтверждение отправки (без LLM)
-7. **Report** — LLM генерирует финальный отчёт
-
-### Ключевые особенности
-- LLM-генерация Python-кода для каждого шага
-- Обратная связь при ошибках (до 3 попыток)
-- Сессионные директории с timestamp
-- Использует 20% обучающих данных для скорости
-- Fallback-функции при ошибках LLM
-
-### Архитектура
 ```
-Запрос пользователя → LLM генерация кода → Валидация кода → Выполнение в подпроцессе → Обновление state
-                              ↑                                                                  |
-                              └────────────── Обратная связь при ошибке ←──────────────────────┘
+KAGGLE_USERNAME=your_kaggle_username
+API_KAGGLE_KEY=your_kaggle_api_key
+OPENROUTER_API_KEY=sk-or-v1-your_openrouter_key
 ```
 
-### Запуск
+Optionally set the Kaggle competition slug via environment variable (defaults to `mws-ai-agents-2026`):
+
 ```bash
-.venv/bin/python ai_agents_course/final_project/ai_agent_step_by_step/02_.py
+export KAGGLE_COMPETITION=your-competition-slug
 ```
 
----
+Key settings in `config.py`:
 
-## 03_.py — Supervisor мульти-агентный пайплайн
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TRAIN_SAMPLE_PCT` | `100` | Percentage of training data to use (lower for faster iterations) |
+| `TRAIN_SAMPLE_FRAC` | `0.2` | Fraction held out for validation (80/20 split) |
+| `RAG_ENABLED` | `True` | Enable notebook RAG context injection |
+| `RAG_TOP_K` | `5` | Number of RAG chunks to retrieve |
+| `WEB_SEARCH_ENABLED` | `True` | Enable web search context injection |
 
-<img src="imgs/agents_3.jpeg" width="500">
+### Running the Pipeline
 
-Мульти-агентная архитектура с использованием `langgraph-supervisor`. Агент-супервизор координирует специализированных рабочих агентов.
-
-### Архитектура
-```
-                    Supervisor Agent (Супервизор)
-                              |
-        +--------------------+--------------------+
-        |                    |                    |
-   EDA Agent           Train Agent          Eval Agent
-   (анализ)            (обучение)           (оценка)
-                                                  |
-                                           Submit Agent
-                                        (создание CSV)
-```
-
-### Рабочие агенты
-| Агент | Инструменты | Назначение |
-|-------|-------------|------------|
-| `eda_agent` | `tool_eda_analyze`, `tool_eda_save_report` | Анализ данных |
-| `train_agent` | `tool_train_model` | Обучение модели |
-| `eval_agent` | `tool_eval_model`, `tool_eval_save_metrics` | Оценка модели |
-| `submit_agent` | `tool_submit_create`, `tool_submit_validate` | Создание submission |
-
-### Ключевые особенности
-- Супервизор координирует через handoff-инструменты
-- Каждый агент имеет специализированные инструменты
-- Сессионное хранение артефактов
-- Fallback-пайплайн при ошибках супервизора
-- Отправка в Kaggle (без агента)
-- `recursion_limit=15` для предотвращения бесконечных циклов
-
-### Запуск
 ```bash
-.venv/bin/python ai_agents_course/final_project/ai_agent_step_by_step/03_.py
+uv run python main.py
 ```
 
----
+The pipeline creates a timestamped session directory under `artifacts/sessions/` containing:
+- Generated code for each step and attempt
+- Trained model artifacts (`.joblib`)
+- EDA reports and visualizations
+- Local evaluation metrics
+- Final submission CSV
+- Run logs
 
-## К чему мы идём
+### Data Setup
 
-<img src="imgs/agents_4.jpeg" width="600">
-
-Полностью автономный AI-агент, который:
-- Сам анализирует задачу соревнования
-- Планирует стратегию решения
-- Выбирает и настраивает модели
-- Итеративно улучшает результаты
-- Достигает топовых позиций без участия человека
-
----
-
-## Требования
-
-### Зависимости
-```
-pandas
-scikit-learn
-joblib
-kaggle>=1.5.16
-langchain-huggingface
-langgraph
-langgraph-supervisor
-openai
-python-dotenv
-```
-
-### Переменные окружения (`.env`)
-```bash
-# Kaggle API (новый формат токена)
-API_KAGGLE_KEY="KGAT_xxx..."
-
-# OpenRouter для LLM
-OPENROUTER_API_KEY="sk-or-v1-..."
-
-# Опционально: переопределить название соревнования
-KAGGLE_COMPETITION="mws-ai-agents-2026"
-```
-
-### Аутентификация Kaggle
-Скрипты используют новый формат токена Kaggle API (`KGAT_xxx`). Установите `API_KAGGLE_KEY` в файле `.env`.
-
----
-
-## Структура выходных данных
-
-Каждый скрипт создаёт артефакты в `artifacts/sessions/<timestamp>/`:
+Place your Kaggle competition data in the `data/` directory:
 
 ```
-artifacts/
-├── sessions/
-│   └── 2026-03-16_12-34-56/
-│       ├── run.log                 # Лог выполнения
-│       ├── submission.csv          # Submission для Kaggle
-│       ├── models/
-│       │   └── model.joblib        # Обученная модель
-│       ├── reports/
-│       │   ├── eda_summary.txt
-│       │   ├── local_metrics.json
-│       │   └── final_report.txt
-│       └── code/                   # (только в 02_.py)
-│           ├── step1_eda.py
-│           ├── step2_train.py
-│           └── ...
+data/
+├── train.csv
+├── test.csv
+└── sample_submition.csv
 ```
+
+## Key Design Decisions
+
+- **LLM-agnostic via OpenRouter** — swap models by changing `model_llm` in config without altering pipeline code
+- **Graceful degradation** — every LLM step has a deterministic fallback, so the pipeline never crashes due to LLM failures
+- **Isolated code execution** — generated code runs in subprocesses with timeouts, preventing runaway scripts from blocking the pipeline
+- **Hybrid RAG** — combines dense embeddings (sentence-transformers/all-MiniLM-L6-v2) with BM25 sparse retrieval and RRF fusion for robust context retrieval
+- **Parallel exploration** — multiple candidate branches run concurrently to explore different modeling strategies per iteration
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| LLM orchestration | LangChain, LangGraph |
+| LLM access | OpenRouter (ChatOpenAI) |
+| ML models | CatBoost, XGBoost, LightGBM, scikit-learn |
+| RAG embeddings | sentence-transformers (all-MiniLM-L6-v2) |
+| Vector search | FAISS (CPU) |
+| Sparse retrieval | BM25 (rank-bm25) |
+| Web search | DuckDuckGo (via httpx + BeautifulSoup) |
+| Package management | uv |
+
+## License
+
+This project was developed as part of the HSE Agentic Systems course.
