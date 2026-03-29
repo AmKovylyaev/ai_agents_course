@@ -7,6 +7,7 @@ from rag.rag_tools import inject_rag_context_into_state
 from executor import create_step_chain, run_step_with_retry
 from rag.rag_tools import inject_rag_context_into_state
 from mini_feedback_loop import mini_feedback_loop
+from tools.web_context import inject_web_context_into_state
 from prompts import (
     STEP1_PLANNER_PROMPT,
     STEP1_EDA_PROMPT,
@@ -98,6 +99,19 @@ def step2_train_agent(state: dict) -> dict:
         timeout_sec=360,
     )
 
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"best practices for tabular {state.get('task_type', 'regression')} "
+            f"with categorical features catboost cross validation"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
+        if cfg.logger:
+            cfg.logger.info("Web query for training step: %s", web_query)
+
     if not success:
         if cfg.logger:
             cfg.logger.warning("Train agent failed, using fallback")
@@ -114,6 +128,17 @@ def step3_local_eval_agent(state: dict) -> dict:
         if cfg.logger:
             cfg.logger.warning("No LLM available, using fallback eval")
         return step3_local_eval_fallback(state)
+
+    if state.get("web_search_enabled", False):
+        web_query = (
+            f"how to evaluate tabular {state.get('task_type', 'regression')} "
+            f"catboost cross validation metric selection"
+        )
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
 
     state, success = mini_feedback_loop(
         "step3_eval",
@@ -142,6 +167,14 @@ def step4_submission_agent(state: dict) -> dict:
         if cfg.logger:
             cfg.logger.warning("No LLM available, using fallback submission")
         return step4_submission_fallback(state)
+
+    if state.get("web_search_enabled", False):
+        web_query = "kaggle submission csv format regression predict best practices"
+        state = inject_web_context_into_state(
+            state=state,
+            query=web_query,
+            max_results=state.get("web_search_max_results", 3),
+        )
 
     state, success = mini_feedback_loop(
         "step4_submission",

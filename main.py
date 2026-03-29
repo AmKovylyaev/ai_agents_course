@@ -80,6 +80,11 @@ def run_pipeline() -> dict[str, Any]:
         "rag_context": "",
         "rag_results": [],
         "rag_query": "",
+        "web_search_enabled": cfg.WEB_SEARCH_ENABLED,
+        "web_search_max_results": cfg.WEB_SEARCH_MAX_RESULTS,
+        "web_query": "",
+        "web_context": "",
+        "web_results": [],
     }
 
     if cfg.logger:

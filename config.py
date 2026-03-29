@@ -23,6 +23,9 @@ NOTEBOOKS_KB_DIR = SCRIPT_DIR / "notebooks_kb"
 RAG_DIR = SCRIPT_DIR / "artifacts" / "rag"
 RAG_INDEX_DIR = RAG_DIR / "notebook_index"
 
+WEB_SEARCH_ENABLED = True
+WEB_SEARCH_MAX_RESULTS = 3
+
 RAG_ENABLED = True
 RAG_TOP_K = 5
 RAG_SEARCH_TYPE = "hybrid"
