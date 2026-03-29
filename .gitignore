@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+artifacts/
+*.joblib
+*.pkl
+*.bin
+.env
+rag_storage/
+notebook_index/
+notebooks_kb/
