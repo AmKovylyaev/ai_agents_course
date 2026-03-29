@@ -167,28 +167,28 @@ def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, 
         for branch_res in iteration_results:
             evaluated_results.append(step_judge_result_agent(branch_res))
 
-        # Фильтруем только те ветки, которые судья признал годными
-        sufficient_candidates = [
-            res for res in evaluated_results
-            if res.get("verification_decision") == "SUFFICIENT"
-        ]
+        # # Фильтруем только те ветки, которые судья признал годными
+        # sufficient_candidates = [
+        #     res for res in evaluated_results
+        #     if res.get("verification_decision") == "SUFFICIENT"
+        # ]
 
         best_iter_state = None
         best_iter_metric = None
 
-        if not sufficient_candidates:
-            _log(
-                f"Iteration {iteration}: No candidates reached SUFFICIENT status. Refinement will continue using the best available attempt.",
-                level="warning")
-            # Для продолжения цикла рефинамента (передачи hints) возьмем лучшего из всех,
-            # но НЕ будем считать его финальным победителем (best_overall_state)
-            candidates_to_compare = evaluated_results
-        else:
-            _log(f"Found {len(sufficient_candidates)} sufficient candidates. Selecting the best one.")
-            candidates_to_compare = sufficient_candidates
+        # if not evaluated_results:
+        #     _log(
+        #         f"Iteration {iteration}: No candidates reached SUFFICIENT status. Refinement will continue using the best available attempt.",
+        #         level="warning")
+        #     # Для продолжения цикла рефинамента (передачи hints) возьмем лучшего из всех,
+        #     # но НЕ будем считать его финальным победителем (best_overall_state)
+        #     candidates_to_compare = evaluated_results
+        # else:
+        #     _log(f"Found {len(sufficient_candidates)} sufficient candidates. Selecting the best one.")
+        #     candidates_to_compare = sufficient_candidates
 
         # Ищем лучшую метрику в выбранном пуле (либо среди SUFFICIENT, либо среди всех как fallback)
-        for branch_res in candidates_to_compare:
+        for branch_res in evaluated_results:
             val_metrics = branch_res.get("local_metrics", {}).get("val", branch_res.get("local_metrics", {}))
 
             if isinstance(val_metrics, dict):
@@ -206,17 +206,15 @@ def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, 
         # Обновляем глобальное состояние и решаем, выходить ли из цикла
         if best_iter_state:
             # Если этот кандидат был SUFFICIENT, проверяем, не лучше ли он наших прошлых рекордов
-            is_branch_sufficient = best_iter_state.get("verification_decision") == "SUFFICIENT"
+            # is_branch_sufficient = best_iter_state.get("verification_decision") == "SUFFICIENT"
 
-            if is_branch_sufficient:
-                is_overall_better = (best_overall_metric is None or
-                                     (
-                                         best_iter_metric < best_overall_metric if task == "regression" else best_iter_metric > best_overall_metric))
+            is_overall_better = (best_overall_metric is None or
+                                 (best_iter_metric < best_overall_metric if task == "regression" else best_iter_metric > best_overall_metric))
 
-                if is_overall_better:
-                    best_overall_metric = best_iter_metric
-                    best_overall_state = dict(best_iter_state)
-                    _log(f"Updated BEST OVERALL model: Metric = {best_overall_metric:.4f}")
+            if is_overall_better:
+                best_overall_metric = best_iter_metric
+                best_overall_state = dict(best_iter_state)
+                _log(f"Updated BEST OVERALL model: Metric = {best_overall_metric:.4f}")
 
             # Передаем знания на следующую итерацию
             state.update({
@@ -228,10 +226,10 @@ def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, 
                 "categorical_columns": best_iter_state.get("categorical_columns"),
             })
 
-            # Если мы нашли хотя бы одного SUFFICIENT кандидата, можем завершить весь Pipeline
-            if is_branch_sufficient:
-                _log("Stopping refinement: at least one branch is SUFFICIENT.")
-                break
+            # # Если мы нашли хотя бы одного SUFFICIENT кандидата, можем завершить весь Pipeline
+            # if is_branch_sufficient:
+            #     _log("Stopping refinement: at least one branch is SUFFICIENT.")
+            #     break
 
     # --- FINAL STEPS ---
     if best_overall_state:
