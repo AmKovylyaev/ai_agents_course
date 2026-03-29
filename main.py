@@ -25,6 +25,7 @@ Requirements (in .env at project root):
 
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
 from typing import Any
 
