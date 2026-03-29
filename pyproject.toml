@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "catboost>=1.2.10",
     "joblib>=1.5.3",
     "kaggle>=2.0.0",
     "langchain>=1.2.13",
