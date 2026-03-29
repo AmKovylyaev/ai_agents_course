@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import config as cfg
+from config import log as _log, build_prompt_state as _build_prompt_state
 from executor import (
     create_step_chain,
     validate_code,
@@ -31,44 +32,26 @@ from executor import (
 
 
 # ---------------------------------------------------------------------------
-# Prompt-state helper
+# Artifact directory helpers
 # ---------------------------------------------------------------------------
 
-def _build_prompt_state(state: dict) -> dict:
-    """Convert state to a dict of string values suitable for prompt formatting."""
-    prompt_state: dict = {}
-    for k, v in state.items():
-        if isinstance(v, Path):
-            prompt_state[k] = str(v)
-        elif isinstance(v, dict):
-            prompt_state[k] = str(v)
-        else:
-            prompt_state[k] = v if v is not None else ""
+def _attempt_dir(state: dict, step_name: str, attempt: int) -> Path:
+    """Return the directory for a specific step/attempt within the current iteration.
 
-    prompt_state.setdefault("last_error", "")
-    prompt_state.setdefault("previous_code", "")
-    prompt_state.setdefault("plan", "")
-    prompt_state.setdefault("verifier_feedback", "")
-    prompt_state.setdefault("model_path", state.get("model_path", ""))
-    prompt_state.setdefault("target_column", state.get("target_column", ""))
-    prompt_state.setdefault("numeric_columns", state.get("numeric_columns", "[]"))
-    prompt_state.setdefault("categorical_columns", state.get("categorical_columns", "[]"))
-    prompt_state.setdefault("n_classes", state.get("n_classes", ""))
-    prompt_state.setdefault("train_shape", state.get("train_shape", ""))
-    prompt_state.setdefault("task_type", state.get("task_type", ""))
-    prompt_state.setdefault("submit_ok", state.get("submit_ok", False))
-    prompt_state.setdefault("public_score", state.get("public_score", "N/A"))
-    prompt_state.setdefault("private_score", state.get("private_score", "N/A"))
-    prompt_state.setdefault("train_path", state.get("train_path", ""))
-    prompt_state.setdefault("test_path", state.get("test_path", ""))
-    prompt_state.setdefault(
-        "sample_submission_path", state.get("sample_submission_path", "")
-    )
-    prompt_state.setdefault("session_dir", str(state.get("session_dir", "")))
-    prompt_state.setdefault("train_sample_frac", cfg.TRAIN_SAMPLE_FRAC)
-    prompt_state.setdefault("train_sample_pct", cfg.TRAIN_SAMPLE_PCT)
-    prompt_state.setdefault("improvement_hint", state.get("improvement_hint", ""))
-    return prompt_state
+    Layout: session_dir/iter_N/step_name/attempt_M/
+    """
+    session_dir = Path(state["session_dir"])
+    iteration = state.get("iteration", 1)
+    d = session_dir / f"iter_{iteration}" / step_name / f"attempt_{attempt}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_text(directory: Path, filename: str, text: str) -> Path:
+    """Write text to a file and return the path."""
+    p = directory / filename
+    p.write_text(text, encoding="utf-8")
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +59,7 @@ def _build_prompt_state(state: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_coder_tools(
-    state: dict, step_name: str, timeout_sec: int,
+    state: dict, step_name: str, attempt: int, timeout_sec: int,
 ) -> tuple[list, dict[str, Any]]:
     """Build tools for the coder agent. Returns (tools, exec_result_container)."""
     from langchain_core.tools import tool as lc_tool
@@ -84,6 +67,7 @@ def _make_coder_tools(
     exec_result: dict[str, Any] = {
         "success": False, "output": "", "updated_state": None, "code": "",
     }
+    run_counter: dict[str, int] = {"n": 0}
 
     @lc_tool
     def validate_syntax(code: str) -> str:
@@ -97,7 +81,7 @@ def _make_coder_tools(
         """Scan code for dangerous operations (os.system, subprocess, eval, exec,
         file deletion, network calls). Returns 'PASS' or 'FAIL: <details>'."""
         from guardrails import check_code_safety
-        r = check_code_safety(code)
+        r = check_code_safety(code, quiet=True)
         return f"{'PASS' if r else 'FAIL'}: {r.message}"
 
     @lc_tool
@@ -105,30 +89,34 @@ def _make_coder_tools(
         """Validate, safety-check, then execute Python code in an isolated subprocess.
         The subprocess has a `state` dict with all pipeline paths.
         Returns 'SUCCESS: <stdout>' or 'ERROR: <details>'.
-        If it fails, fix the code and call this tool again."""
+        If it fails, fix the code and call this tool again (up to 2 calls total)."""
+        run_counter["n"] += 1
+        n = run_counter["n"]
+
         ok, msg = validate_code(code)
         if not ok:
             return f"VALIDATION_ERROR: {msg}"
 
         from guardrails import check_code_safety
-        safety = check_code_safety(code)
+        safety = check_code_safety(code, quiet=True)
         if not safety:
             return f"SAFETY_ERROR: {safety.message}"
 
-        code_dir = Path(state.get("code_dir", str(Path(state["session_dir"]) / "code")))
-        code_file = code_dir / f"{step_name}.py"
-        code_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(code_file, "w", encoding="utf-8") as f:
-            f.write(code)
-        if cfg.logger:
-            cfg.logger.info("%s: Code saved to %s", step_name, code_file)
+        att_dir = _attempt_dir(state, step_name, attempt)
+        code_file = att_dir / f"code_v{n}.py"
+        code_file.write_text(code, encoding="utf-8")
 
         success, output, updated = execute_code(code, state, timeout_sec)
         exec_result["code"] = code
         if success:
             exec_result.update(success=True, output=output, updated_state=updated)
+            final_file = att_dir / "code.py"
+            final_file.write_text(code, encoding="utf-8")
+            _log("  run_code [%d]: SUCCESS", n)
             return f"SUCCESS:\n{output[:2000]}"
         exec_result["output"] = output
+        short_err = output.strip().splitlines()[-1][:200] if output.strip() else "unknown error"
+        _log("  run_code [%d]: FAILED — %s", n, short_err)
         return f"EXECUTION_ERROR:\n{output[:3000]}"
 
     return [validate_syntax, check_safety, run_code], exec_result
@@ -218,8 +206,12 @@ _CODER_SYSTEM = (
     "1. Write the complete Python code as a single string\n"
     "2. Call the run_code tool with that full code string\n"
     "3. If run_code returns an error, fix the code and call run_code again\n"
-    "4. Repeat until run_code returns SUCCESS\n\n"
-    "You MUST call run_code at least once. If you finish without calling run_code, the attempt fails."
+    "4. You have at most 2 run_code calls. Make them count.\n\n"
+    "CRITICAL RULES:\n"
+    "- Follow the plan EXACTLY — use the model, encoder, and approach specified in the plan.\n"
+    "- Do NOT switch to a different model or library than what the plan specifies.\n"
+    "- If a library import fails, fix the import — do NOT replace the model/library.\n"
+    "- You MUST call run_code at least once. If you finish without calling run_code, the attempt fails."
 )
 
 _VERIFIER_SYSTEM = (
@@ -235,12 +227,22 @@ _VERIFIER_SYSTEM = (
 )
 
 
+_MAX_AGENT_STEPS = 8
+
+
 def _invoke_agent(llm, tools: list, system_prompt: str, user_message: str) -> str:
     """Run a LangGraph ReAct agent and return its final text response."""
     from langgraph.prebuilt import create_react_agent
 
     agent = create_react_agent(llm, tools, prompt=system_prompt)
-    result = agent.invoke({"messages": [("user", user_message)]})
+    try:
+        result = agent.invoke(
+            {"messages": [("user", user_message)]},
+            config={"callbacks": [], "recursion_limit": _MAX_AGENT_STEPS},
+        )
+    except Exception as e:
+        _log("  Agent hit recursion limit or error: %s", e, level="warning")
+        return ""
     messages = result.get("messages", [])
     for msg in reversed(messages):
         text = getattr(msg, "content", "")
@@ -263,66 +265,59 @@ def mini_feedback_loop(
     max_attempts: int = 3,
     timeout_sec: int = 120,
 ) -> tuple[dict, bool]:
-    """Three-agent feedback loop: planner → coder agent → verifier agent.
+    """Three-agent feedback loop: planner -> coder agent -> verifier agent.
 
-    - **Planner** (simple chain): produces a step-by-step plan.
-    - **Coder agent** (ReAct with tools): writes code, validates, executes,
-      and can self-correct within a single attempt.
-    - **Verifier agent** (ReAct with guardrail tools): diagnoses failures
-      using concrete guardrail checks and provides feedback for the next attempt.
+    Artifacts for every attempt are saved under:
+        session_dir/iter_N/<step_name>/attempt_M/
+            planner_prompt.txt   — filled planner prompt
+            plan.txt             — planner output
+            coder_prompt.txt     — filled coder prompt
+            code.py              — generated code
+            verifier_prompt.txt  — filled verifier prompt
+            feedback.txt         — verifier output
 
     Returns ``(updated_state, success)``.
     """
-    logger = cfg.logger
     planner_chain = create_step_chain(planner_prompt, llm)
     errors: list[str] = []
 
     for attempt in range(1, max_attempts + 1):
-        if logger:
-            logger.info("%s: Attempt %d/%d", step_name, attempt, max_attempts)
+        _log("─" * 50)
+        _log("%s  attempt %d/%d", step_name, attempt, max_attempts)
 
         try:
             prompt_state = _build_prompt_state(state)
-            session_dir = Path(state["session_dir"])
-            plans_dir = Path(state.get("plans_dir", str(session_dir / "plans")))
-            plans_dir.mkdir(exist_ok=True)
-            feedback_dir = Path(state.get("feedback_dir", str(session_dir / "feedback")))
-            feedback_dir.mkdir(exist_ok=True)
+            att_dir = _attempt_dir(state, step_name, attempt)
 
             # ── Planner (simple chain) ────────────────────────────────
-            if logger:
-                logger.info("%s: [Planner] Generating plan...", step_name)
+            planner_input = planner_prompt.format(**prompt_state)
+            _save_text(att_dir, "planner_prompt.txt", planner_input)
+
             plan = planner_chain.invoke(prompt_state)
-            if logger:
-                logger.info("%s: [Planner] Plan ready (%d chars)", step_name, len(plan))
+            _save_text(att_dir, "plan.txt", plan)
+            _log("  Planner → plan (%d chars)", len(plan))
+
             state["plan"] = plan
             prompt_state["plan"] = plan
 
-            plan_file = plans_dir / f"{step_name}_attempt{attempt}.txt"
-            with open(plan_file, "w", encoding="utf-8") as f:
-                f.write(plan)
-            if logger:
-                logger.info("%s: Plan saved to %s", step_name, plan_file)
-
             # ── Coder Agent ───────────────────────────────────────────
-            if logger:
-                logger.info("%s: [Coder Agent] Starting...", step_name)
-            coder_tools, exec_result = _make_coder_tools(state, step_name, timeout_sec)
+            coder_tools, exec_result = _make_coder_tools(
+                state, step_name, attempt, timeout_sec,
+            )
             coder_input = coder_prompt.format(**prompt_state)
+            _save_text(att_dir, "coder_prompt.txt", coder_input)
 
             _invoke_agent(llm, coder_tools, _CODER_SYSTEM, coder_input)
 
             if not exec_result["success"]:
                 error_output = exec_result.get("output") or "Coder agent did not execute code"
                 error_msg = f"Execution failed: {error_output}"
-                if logger:
-                    logger.warning("%s: %s", step_name, error_msg[:500])
+                _log("  Coder FAILED: %s", error_msg[:300], level="warning")
                 errors.append(error_msg)
                 state["last_error"] = error_msg
                 state["previous_code"] = exec_result.get("code", "")
             else:
-                if logger:
-                    logger.info("%s: [Coder Agent] Execution successful", step_name)
+                _log("  Coder OK")
                 state.update(exec_result["updated_state"])
                 state["previous_code"] = exec_result.get("code", "")
                 state.pop("last_error", None)
@@ -333,27 +328,18 @@ def mini_feedback_loop(
                 if guardrail_failures:
                     guardrail_msg = "; ".join(f.message for f in guardrail_failures)
                     state["last_error"] = f"Guardrail check failed: {guardrail_msg}"
-                    if logger:
-                        logger.warning("%s: %s", step_name, state["last_error"])
+                    _log("  Guardrails FAILED: %s", guardrail_msg, level="warning")
 
             # ── Verifier Agent (always runs) ──────────────────────────
-            if logger:
-                logger.info("%s: [Verifier Agent] Verifying...", step_name)
             verifier_tools = _make_verifier_tools(state, step_name)
             verifier_input = verifier_prompt.format(**_build_prompt_state(state))
+            _save_text(att_dir, "verifier_prompt.txt", verifier_input)
+
             feedback = _invoke_agent(
                 llm, verifier_tools, _VERIFIER_SYSTEM, verifier_input,
             )
-            if logger:
-                logger.info(
-                    "%s: [Verifier Agent] Feedback ready (%d chars)",
-                    step_name, len(feedback),
-                )
+            _save_text(att_dir, "feedback.txt", feedback)
             state["verifier_feedback"] = feedback
-
-            feedback_file = feedback_dir / f"{step_name}_attempt{attempt}.txt"
-            with open(feedback_file, "w", encoding="utf-8") as f:
-                f.write(feedback)
 
             # ── Accept or retry ───────────────────────────────────────
             verifier_approved = "FAIL" not in feedback.upper()
@@ -362,15 +348,15 @@ def mini_feedback_loop(
                 and not state.get("last_error")
                 and verifier_approved
             )
-            if logger:
-                verdict = "APPROVED" if is_approved else "REJECTED"
-                logger.info(
-                    "%s: [Verifier Verdict] %s (exec=%s, guardrails=%s, verifier=%s)",
-                    step_name, verdict,
-                    "ok" if exec_result["success"] else "fail",
-                    "ok" if not state.get("last_error") else "fail",
-                    "ok" if verifier_approved else "fail",
-                )
+            verdict = "APPROVED" if is_approved else "REJECTED"
+            _log(
+                "  Verdict: %s  (exec=%s, guardrails=%s, verifier=%s)",
+                verdict,
+                "ok" if exec_result["success"] else "fail",
+                "ok" if not state.get("last_error") else "fail",
+                "ok" if verifier_approved else "fail",
+            )
+
             if is_approved:
                 state[f"{step_name}_attempts"] = attempt
                 state[f"{step_name}_success"] = True
@@ -386,13 +372,11 @@ def mini_feedback_loop(
 
         except Exception as e:
             error_msg = f"Unexpected error: {e!s}"
-            if logger:
-                logger.error("%s: %s", step_name, error_msg)
+            _log("  %s: %s", step_name, error_msg, level="error")
             errors.append(error_msg)
             state["last_error"] = error_msg
 
-    if logger:
-        logger.error("%s: All %d attempts failed", step_name, max_attempts)
+    _log("%s: all %d attempts failed", step_name, max_attempts, level="error")
     state[f"{step_name}_attempts"] = max_attempts
     state[f"{step_name}_success"] = False
     state[f"{step_name}_errors"] = errors

@@ -36,6 +36,51 @@ TRAIN_SAMPLE_FRAC = 0.2
 logger: logging.Logger | None = None
 
 
+def log(msg: str, *args: Any, level: str = "info") -> None:
+    """Central logging helper used across all modules."""
+    if logger:
+        getattr(logger, level)(msg, *args)
+
+
+def build_prompt_state(state: dict) -> dict:
+    """Convert state to a dict of string values suitable for prompt formatting."""
+    prompt_state: dict = {}
+    for k, v in state.items():
+        if isinstance(v, Path):
+            prompt_state[k] = str(v)
+        elif isinstance(v, dict):
+            prompt_state[k] = str(v)
+        else:
+            prompt_state[k] = v if v is not None else ""
+
+    defaults = {
+        "last_error": "",
+        "previous_code": "",
+        "plan": "",
+        "verifier_feedback": "",
+        "model_path": state.get("model_path", ""),
+        "target_column": state.get("target_column", ""),
+        "numeric_columns": state.get("numeric_columns", "[]"),
+        "categorical_columns": state.get("categorical_columns", "[]"),
+        "n_classes": state.get("n_classes", ""),
+        "train_shape": state.get("train_shape", ""),
+        "task_type": state.get("task_type", ""),
+        "submit_ok": state.get("submit_ok", False),
+        "public_score": state.get("public_score", "N/A"),
+        "private_score": state.get("private_score", "N/A"),
+        "train_path": state.get("train_path", ""),
+        "test_path": state.get("test_path", ""),
+        "sample_submission_path": state.get("sample_submission_path", ""),
+        "session_dir": str(state.get("session_dir", "")),
+        "train_sample_frac": TRAIN_SAMPLE_FRAC,
+        "train_sample_pct": TRAIN_SAMPLE_PCT,
+        "improvement_hint": state.get("improvement_hint", ""),
+    }
+    for k, v in defaults.items():
+        prompt_state.setdefault(k, v)
+    return prompt_state
+
+
 def setup_logging(session_dir: Path) -> None:
     """Configure console + file logging for a session."""
     global logger
@@ -50,9 +95,16 @@ def setup_logging(session_dir: Path) -> None:
         ],
         force=True,
     )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
+    for noisy in (
+        "httpx", "httpcore", "openai",
+        "langchain", "langchain_core", "langchain_openai",
+        "langgraph", "langsmith",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    from langchain_core.globals import set_verbose, set_debug
+    set_verbose(False)
+    set_debug(False)
 
     logger = logging.getLogger(__name__)
     logger.info("Logging to %s", log_file)
@@ -64,7 +116,7 @@ def create_session_dir() -> Path:
     session_dir = ARTIFACTS_DIR / "sessions" / timestamp
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    for sub in ("code", "models", "reports", "plans", "feedback"):
+    for sub in ("models", "reports"):
         (session_dir / sub).mkdir(exist_ok=True)
 
     return session_dir
@@ -124,7 +176,11 @@ def load_data_subset(state: dict) -> dict:
     train_path_orig = Path(state["train_path"])
     if train_path_orig.exists():
         train_df_full = pd.read_csv(train_path_orig)
-        train_df = train_df_full.sample(frac=TRAIN_SAMPLE_PCT / 100, random_state=42)
+
+        if TRAIN_SAMPLE_PCT >= 100:
+            train_df = train_df_full
+        else:
+            train_df = train_df_full.sample(frac=TRAIN_SAMPLE_PCT / 100, random_state=42)
 
         subset_path = Path(state["session_dir"]) / "train_subset.csv"
         train_df.to_csv(subset_path, index=False)
@@ -134,7 +190,7 @@ def load_data_subset(state: dict) -> dict:
 
         if logger:
             logger.info(
-                "Subsetted %d train samples (%d%% of %d) → %s",
+                "Using %d train samples (%d%% of %d) → %s",
                 len(train_df), TRAIN_SAMPLE_PCT, len(train_df_full), subset_path,
             )
     else:

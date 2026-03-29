@@ -23,6 +23,7 @@ Context:
 - Session directory: {session_dir}
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
+- Feedback from judge (if any): {improvement_hint}
 
 Output a numbered step-by-step plan covering:
 1. Load the train and test data from the provided paths
@@ -136,28 +137,33 @@ Context:
 - Train/val split fraction: {train_sample_frac} (random_state=42)
 - Previous error (if retry): {last_error}
 - Verifier feedback (if retry): {verifier_feedback}
+- Feedback from judge (if any): {improvement_hint}
 
 IMPORTANT — Use ALL available columns with appropriate encoding:
 - FIRST: drop the target column to get X; derive column lists from X (not from the full DataFrame).
-- Build a sklearn Pipeline with ColumnTransformer. Split categoricals by cardinality:
-  * Numeric columns: SimpleImputer(strategy="median") → StandardScaler
-  * Low-cardinality categoricals (≤50 unique): SimpleImputer(strategy="most_frequent") → OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-  * High-cardinality categoricals (>50 unique): SimpleImputer(strategy="constant", fill_value="__missing__") → OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+- Decide how to handle numeric columns (imputation, scaling) and categorical columns (encoding strategy depends on the model and cardinality). Some models (e.g. CatBoost) handle categoricals natively — but CatBoost CANNOT accept NaN in categorical features, so always fill NaN first (e.g. fillna("__missing__") and cast to str).
+- You may use a sklearn Pipeline with ColumnTransformer, or a simpler approach if the chosen model supports raw features.
 
-Choose a model appropriate for the task_type. Consider the data size, number of features, and the nature of the target. Training must complete within 2 minutes.
+Model selection:
+- If there is NO judge feedback: use CatBoost (CatBoostRegressor / CatBoostClassifier).
+- If judge feedback suggests a different model: follow that suggestion.
+- For regression tasks: use MSE as the loss function (loss_function="MAE" is NOT allowed). Use objective="reg:squarederror" for XGBoost, objective="mse" for LightGBM. CatBoost does not have a pure MSE loss — use loss_function="RMSE" (which minimizes MSE under the hood).
+Training must complete within 2 minutes.
 
-Save the ENTIRE Pipeline object (preprocessing + model) to SESSION_DIR/models/pipeline.joblib
+Available libraries: sklearn, catboost, xgboost, lightgbm, category_encoders, pandas, numpy.
+
+Save the trained model (or pipeline) to SESSION_DIR/models/pipeline.joblib
 
 Output a numbered step-by-step plan covering:
 1. Load data
 2. Identify and separate the target column
 3. Target transformation (if regression)
 4. Classify feature columns by type and cardinality
-5. Design the preprocessing (ColumnTransformer)
+5. Design the preprocessing strategy (if needed)
 6. Choose a model
-7. Assemble the full Pipeline (preprocessor + model)
-8. Split, fit, and report initial metrics
-9. Save the pipeline
+7. Assemble and fit
+8. Report initial metrics (train and val)
+9. Save the model/pipeline
 10. State dict keys to update (including target_transform)
 
 If there was a previous error or verifier feedback, adjust the plan accordingly.
@@ -191,11 +197,15 @@ Previous attempt (if retry):
 Requirements:
 - Drop the target column first, then verify which EDA-reported feature columns actually exist in the DataFrame. Only use columns present in the data.
 - For regression: apply log1p to the target before fitting and set state["target_transform"] = "log1p".
-- Build a sklearn Pipeline (ColumnTransformer + model) and save the entire pipeline to session_dir/models/pipeline.joblib.
-- The pipeline must handle raw DataFrame columns directly (all preprocessing inside the pipeline).
-- Do not define custom transformer classes or create separate Python modules. Use only well-known library components (sklearn, catboost, xgboost, lightgbm, etc.) so the saved pipeline loads cleanly in any process.
+- CatBoost NaN handling: CatBoost cannot accept NaN in categorical features. Before fitting, fill NaN in categorical columns with a string like "__missing__" and cast them to str.
 - Print metrics after fitting.
 - Update state dict with: target_column, model_path, X_train_shape, X_val_shape, model_type, task_type, target_transform.
+
+SERIALIZATION (critical — violations cause immediate rejection):
+- Save the model object directly via joblib.dump(model, session_dir + "/models/pipeline.joblib"). If using a sklearn Pipeline, save the Pipeline object.
+- The saved object MUST have a .predict() method. Do NOT save a dict, tuple, or wrapper — save only the model or Pipeline.
+- Do NOT define custom classes (no custom transformers, no wrapper classes like "CatBoostPipeline"). Only use classes from installed libraries (sklearn, catboost, xgboost, lightgbm, category_encoders).
+- Do NOT create separate .py module files. All code must be in a single script.
 
 IMPORTANT: You MUST call the run_code tool with your complete code. Do NOT just output the code as text.
 """
@@ -359,20 +369,21 @@ Context:
 - Verifier feedback (if retry): {verifier_feedback}
 
 Key points:
-- The pipeline handles all preprocessing — pass raw feature columns directly.
-- If the target was log-transformed during training (state["target_transform"] == "log1p"), inverse-transform the predictions to restore the original scale.
+- The saved model may be a sklearn Pipeline or a raw model (e.g. CatBoost). Load with joblib.load().
+- If the model is CatBoost: fill NaN in categorical columns with "__missing__" and cast to str before predict.
+- If the target was log-transformed during training (state["target_transform"] == "log1p"), apply np.expm1() to predictions to restore the original scale.
 - The submission must match the sample submission exactly: same columns, same order, same number of rows.
 
 Output a numbered step-by-step plan covering:
 1. Load the sample submission to learn the expected format
-2. Load the pipeline and the test data
+2. Load the model and the test data
 3. Remove the target column from test data if present
-4. Generate predictions using the pipeline
-5. Inverse-transform predictions if target was log-transformed
-6. Assemble the output DataFrame matching the sample submission format
-7. Verify column names and row count match the sample
-8. Save to SESSION_DIR/submission.csv
-9. Update state dict
+4. Preprocess categorical columns for CatBoost if needed (fill NaN, cast to str)
+5. Generate predictions
+7. Assemble the output DataFrame matching the sample submission format
+8. Verify column names and row count match the sample
+9. Save to SESSION_DIR/submission.csv
+10. Update state dict
 
 If there was a previous error or verifier feedback, adjust the plan accordingly.
 Output ONLY the plan as a numbered list in plain English.
@@ -399,9 +410,10 @@ Previous attempt (if retry):
 - Verifier feedback: {verifier_feedback}
 
 Requirements:
-- The pipeline handles all preprocessing — pass raw feature columns directly.
+- Load the model with joblib.load(). It may be a sklearn Pipeline or a raw model (e.g. CatBoost).
 - Remove the target column from test data before predicting (it may not be present, so handle gracefully).
-- If state["target_transform"] == "log1p", the pipeline outputs log-scale values — inverse-transform predictions to restore the original scale.
+- If the model is CatBoost: fill NaN in categorical columns with "__missing__" and cast to str before predicting (CatBoost cannot accept NaN in categoricals).
+- If state["target_transform"] == "log1p", the model outputs log-scale values — apply np.expm1() to predictions to restore the original scale.
 - Load the sample submission first to learn the expected column names and row count.
 - The output CSV must match the sample submission exactly: same columns, same order, same number of rows. Verify this before saving.
 - Save to session_dir/submission.csv without the index.
@@ -441,6 +453,25 @@ Watch for:
 Based on tool results, provide your verdict:
 - If ALL checks pass: summarize what passed, state "APPROVED"
 - If ANY check fails: list each failure with a specific fix, state "FAIL"
+"""
+
+# ---------------------------------------------------------------------------
+# Step – Judge (LLM-as-a-judge, outer refinement loop)
+# ---------------------------------------------------------------------------
+
+STEP_JUDGE_PROMPT = """You are a Judge evaluating ML experiment results. Be extremely concise.
+
+Metrics (train / val): {local_metrics}
+Model info: {model_info}
+
+Rules:
+- SUFFICIENT if val metrics are reasonable and no severe overfitting (train/val gap < 1.2x).
+- NEED_REFINEMENT otherwise.
+- Each suggestion must be ONE short sentence — a single concrete action, not a list.
+- Do NOT suggest hyperparameter tuning, grid search, or random search.
+
+Output ONLY a JSON object:
+{{"decision": "SUFFICIENT or NEED_REFINEMENT", "reasoning": "one sentence", "eda_suggestions": "one sentence or empty", "train_suggestions": "one sentence or empty"}}
 """
 
 # ---------------------------------------------------------------------------
