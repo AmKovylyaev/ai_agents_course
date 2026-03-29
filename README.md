@@ -51,6 +51,10 @@ The pipeline augments LLM prompts with relevant context from two sources:
 - **Notebook RAG** — a local knowledge base of curated ML notebooks and templates (`notebooks_kb/`), indexed with sentence-transformers embeddings + BM25 for hybrid retrieval via FAISS
 - **Web Search** — DuckDuckGo-based search for current best practices, injected into prompts as additional context
 
+## Kaggle Score 
+
+<img width="1532" height="457" alt="image" src="https://github.com/user-attachments/assets/2a5919a5-1537-49cf-a354-db440bdc4810" />
+
 ## Project Structure
 
 ```
