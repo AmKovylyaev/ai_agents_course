@@ -132,7 +132,7 @@ def run_pipeline() -> dict[str, Any]:
 
         # Сохраняем лучшую модель по метрике (предполагаем, что в local_metrics есть "mse")
         current_metrics = state.get("local_metrics", {})
-        current_mse = current_metrics.get("mse")
+        current_mse = current_metrics.get("rmse")
         if current_mse is not None:
             if best_metric is None or current_mse < best_metric:
                 best_metric = current_mse
