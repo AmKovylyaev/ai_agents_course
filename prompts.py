@@ -553,7 +553,7 @@ Metrics (train / val): {local_metrics}
 Model info: {model_info}
 
 Rules:
-- SUFFICIENT if val metrics are reasonable and no severe overfitting (train/val gap < 1.2x).
+- SUFFICIENT if val metrics are reasonable and no severe overfitting (train/val gap < 1.4x).
 - NEED_REFINEMENT otherwise.
 - Each suggestion must be ONE short sentence — a single concrete action, not a list.
 - Do NOT suggest hyperparameter tuning, grid search, or random search.
