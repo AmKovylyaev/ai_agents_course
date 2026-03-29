@@ -152,12 +152,12 @@ def check_model_exists(state: dict[str, Any]) -> GuardrailResult:
 
     try:
         import joblib
-        pipeline = joblib.load(model_path)
-        has_predict = hasattr(pipeline, "predict")
+        model = joblib.load(model_path)
+        has_predict = hasattr(model, "predict")
         if not has_predict:
             result = GuardrailResult(False, "Loaded object has no predict() method")
         else:
-            result = GuardrailResult(True, f"Pipeline loaded ({type(pipeline).__name__})")
+            result = GuardrailResult(True, f"Model loaded ({type(model).__name__})")
     except Exception as e:
         result = GuardrailResult(False, f"Failed to load model: {e}")
 
@@ -170,48 +170,39 @@ def check_model_exists(state: dict[str, Any]) -> GuardrailResult:
 # ---------------------------------------------------------------------------
 
 CLASSIFICATION_METRIC_KEYS = {"accuracy", "precision", "recall", "f1"}
-REGRESSION_METRIC_KEYS = {"rmse", "mae", "r2"}
+REGRESSION_METRIC_KEYS = {"mse", "mae", "r2"}
 RANDOM_BASELINE_THRESHOLD = 0.05
 
 
-def check_metrics_sanity(state: dict[str, Any]) -> GuardrailResult:
-    """Verify local metrics are present and valid (task-type aware)."""
-    metrics = state.get("local_metrics", {})
-    if not metrics:
-        result = GuardrailResult(False, "local_metrics is empty or missing")
-        _log(result, "metrics_sanity")
-        return result
-
-    task_type = state.get("task_type", "classification")
+def _validate_metric_dict(
+    metrics: dict, task_type: str, split_name: str, state: dict[str, Any],
+) -> list[str]:
+    """Validate a single flat metrics dict; return list of problems."""
     is_regression = task_type == "regression"
     expected_keys = REGRESSION_METRIC_KEYS if is_regression else CLASSIFICATION_METRIC_KEYS
-
     problems: list[str] = []
 
     missing_keys = expected_keys - set(metrics.keys())
     if missing_keys:
-        problems.append(f"Missing metric keys for {task_type}: {missing_keys}")
+        problems.append(f"[{split_name}] Missing metric keys for {task_type}: {missing_keys}")
 
     for key, value in metrics.items():
         if not isinstance(value, (int, float)):
-            problems.append(f"{key} is not numeric: {value!r}")
-            continue
+            problems.append(f"[{split_name}] {key} is not numeric: {value!r}")
 
     if is_regression:
-        rmse = metrics.get("rmse")
-        if isinstance(rmse, (int, float)) and rmse < 0:
-            problems.append(f"rmse={rmse:.4f} is negative (invalid)")
-        mae = metrics.get("mae")
-        if isinstance(mae, (int, float)) and mae < 0:
-            problems.append(f"mae={mae:.4f} is negative (invalid)")
+        for key in ("mse", "mae"):
+            v = metrics.get(key)
+            if isinstance(v, (int, float)) and v < 0:
+                problems.append(f"[{split_name}] {key}={v:.4f} is negative (invalid)")
         r2 = metrics.get("r2")
         if isinstance(r2, (int, float)) and r2 < -1.0:
-            problems.append(f"r2={r2:.4f} is suspiciously low")
+            problems.append(f"[{split_name}] r2={r2:.4f} is suspiciously low")
     else:
         for key in ("accuracy", "precision", "recall", "f1"):
-            value = metrics.get(key)
-            if isinstance(value, (int, float)) and not (0.0 <= value <= 1.0):
-                problems.append(f"{key}={value:.4f} out of [0, 1] range")
+            v = metrics.get(key)
+            if isinstance(v, (int, float)) and not (0.0 <= v <= 1.0):
+                problems.append(f"[{split_name}] {key}={v:.4f} out of [0, 1] range")
 
         n_classes = state.get("n_classes")
         if n_classes and isinstance(n_classes, (int, float)) and n_classes > 0:
@@ -219,16 +210,50 @@ def check_metrics_sanity(state: dict[str, Any]) -> GuardrailResult:
             acc = metrics.get("accuracy")
             if isinstance(acc, (int, float)) and acc < random_acc - RANDOM_BASELINE_THRESHOLD:
                 problems.append(
-                    f"accuracy={acc:.4f} is below random baseline ({random_acc:.4f}) for {n_classes} classes"
+                    f"[{split_name}] accuracy={acc:.4f} below random baseline "
+                    f"({random_acc:.4f}) for {n_classes} classes"
                 )
+    return problems
+
+
+def check_metrics_sanity(state: dict[str, Any]) -> GuardrailResult:
+    """Verify local metrics are present and valid (task-type aware).
+
+    Supports nested format {"train": {...}, "val": {...}} and
+    legacy flat format {"mse": ..., "mae": ..., ...}.
+    """
+    metrics = state.get("local_metrics", {})
+    if not metrics:
+        result = GuardrailResult(False, "local_metrics is empty or missing")
+        _log(result, "metrics_sanity")
+        return result
+
+    task_type = state.get("task_type", "classification")
+    problems: list[str] = []
+
+    has_train = isinstance(metrics.get("train"), dict)
+    has_val = isinstance(metrics.get("val"), dict)
+
+    if has_train or has_val:
+        if not has_train:
+            problems.append("local_metrics missing 'train' sub-dict")
+        else:
+            problems.extend(_validate_metric_dict(metrics["train"], task_type, "train", state))
+        if not has_val:
+            problems.append("local_metrics missing 'val' sub-dict")
+        else:
+            problems.extend(_validate_metric_dict(metrics["val"], task_type, "val", state))
+    else:
+        problems.extend(_validate_metric_dict(metrics, task_type, "flat", state))
 
     if problems:
         result = GuardrailResult(False, "; ".join(problems))
     else:
+        display = metrics.get("val", metrics)
         summary = ", ".join(
-            f"{k}={v:.4f}" for k, v in metrics.items() if isinstance(v, (int, float))
+            f"{k}={v:.4f}" for k, v in display.items() if isinstance(v, (int, float))
         )
-        result = GuardrailResult(True, f"[{task_type}] {summary}")
+        result = GuardrailResult(True, f"[{task_type}] val: {summary}")
     _log(result, "metrics_sanity")
     return result
 

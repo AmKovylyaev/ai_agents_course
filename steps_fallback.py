@@ -139,27 +139,25 @@ def step1_eda_fallback(state: dict) -> dict:
             cfg.logger.warning("matplotlib not available; skipping EDA plots.")
 
     state["step1_eda_success"] = True
+    state["step1_eda_code"] = "(fallback – no LLM-generated code)"
     if cfg.logger:
         cfg.logger.info("Step 1 EDA (fallback) done")
     return state
 
 
 def step2_train_fallback(state: dict) -> dict:
-    """Fallback training: Pipeline with ColumnTransformer + RandomForest, no LLM."""
+    """Fallback training: CatBoost with native categorical support, no LLM."""
     state = dict(state)
 
     try:
+        import numpy as np
         import pandas as pd
         import joblib
-        from sklearn.compose import ColumnTransformer
-        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-        from sklearn.impute import SimpleImputer
+        from catboost import CatBoostClassifier, CatBoostRegressor
         from sklearn.model_selection import train_test_split
-        from sklearn.pipeline import Pipeline
-        from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
     except ImportError as e:
         if cfg.logger:
-            cfg.logger.warning("sklearn/joblib not available: %s", e)
+            cfg.logger.warning("catboost/joblib not available: %s", e)
         state["model_path"] = ""
         return state
 
@@ -188,82 +186,70 @@ def step2_train_fallback(state: dict) -> dict:
     X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
 
-    numeric_cols = [
-        c for c in state.get(
-            "numeric_columns",
-            list(X.select_dtypes(include=["number"]).columns),
-        ) if c in X.columns
-    ]
-    all_cat_cols = [
+    if task_type == "regression":
+        y = np.log1p(y)
+        state["target_transform"] = "log1p"
+        if cfg.logger:
+            cfg.logger.info("Applied log1p target transformation (regression)")
+    else:
+        state["target_transform"] = "none"
+
+    cat_cols = [
         c for c in state.get(
             "categorical_columns",
             list(X.select_dtypes(include=["object", "category"]).columns),
         ) if c in X.columns
     ]
-    low_card_cols = [c for c in all_cat_cols if X[c].nunique() <= 50]
-    high_card_cols = [c for c in all_cat_cols if X[c].nunique() > 50]
+    for c in cat_cols:
+        X[c] = X[c].fillna("__missing__").astype(str)
+
+    cat_indices = [X.columns.get_loc(c) for c in cat_cols]
 
     if cfg.logger:
         cfg.logger.info(
-            "Columns: %d numeric, %d low-card cat, %d high-card cat (ordinal)",
-            len(numeric_cols), len(low_card_cols), len(high_card_cols),
+            "Columns: %d total, %d categorical (native CatBoost)",
+            len(X.columns), len(cat_cols),
         )
-
-    num_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-    ])
-    low_cat_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-    ])
-    high_cat_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="constant", fill_value="__missing__")),
-        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
-    ])
-
-    transformers = [
-        ("num", num_pipe, numeric_cols),
-        ("cat_low", low_cat_pipe, low_card_cols),
-    ]
-    if high_card_cols:
-        transformers.append(("cat_high", high_cat_pipe, high_card_cols))
-
-    preprocessor = ColumnTransformer(transformers)
-
-    if task_type == "regression":
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-    else:
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-
-    pipeline = Pipeline([
-        ("preprocessor", preprocessor),
-        ("model", model),
-    ])
 
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=cfg.TRAIN_SAMPLE_FRAC, random_state=42,
     )
-    pipeline.fit(X_train, y_train)
+
+    if task_type == "regression":
+        model = CatBoostRegressor(
+            iterations=500, learning_rate=0.1, depth=6,
+            random_seed=42, verbose=0, cat_features=cat_indices,
+        )
+    else:
+        model = CatBoostClassifier(
+            iterations=500, learning_rate=0.1, depth=6,
+            random_seed=42, verbose=0, cat_features=cat_indices,
+        )
+
+    model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=50)
 
     state["target_column"] = target_col
 
     models_dir = Path(state["session_dir"]) / "models"
     model_path = models_dir / "pipeline.joblib"
-    joblib.dump(pipeline, model_path)
+    joblib.dump(model, model_path)
     state["model_path"] = str(model_path)
+    state["model_type"] = type(model).__name__
 
     state["step2_train_success"] = True
+    state["step2_train_code"] = "(fallback – no LLM-generated code)"
     if cfg.logger:
-        import numpy as np
-        y_pred = pipeline.predict(X_val)
+        y_pred = model.predict(X_val)
         if task_type == "regression":
             from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-            rmse = float(np.sqrt(mean_squared_error(y_val, y_pred)))
-            mae = float(mean_absolute_error(y_val, y_pred))
-            r2 = float(r2_score(y_val, y_pred))
+            y_val_orig = np.expm1(y_val)
+            y_pred_orig = np.expm1(y_pred)
+            mse = float(mean_squared_error(y_val_orig, y_pred_orig))
+            mae = float(mean_absolute_error(y_val_orig, y_pred_orig))
+            r2 = float(r2_score(y_val_orig, y_pred_orig))
             cfg.logger.info(
-                "Step 2 train (fallback): rmse=%.4f, mae=%.4f, r2=%.4f", rmse, mae, r2,
+                "Step 2 train (fallback, original scale): mse=%.4f, mae=%.4f, r2=%.4f",
+                mse, mae, r2,
             )
         else:
             from sklearn.metrics import (
@@ -277,12 +263,12 @@ def step2_train_fallback(state: dict) -> dict:
                 "Step 2 train (fallback): accuracy=%.4f, precision=%.4f, recall=%.4f, f1=%.4f",
                 acc, prec, rec, f1,
             )
-        cfg.logger.info("Pipeline saved to %s", model_path)
+        cfg.logger.info("Model saved to %s", model_path)
     return state
 
 
 def step3_local_eval_fallback(state: dict) -> dict:
-    """Fallback evaluation: load pipeline, predict, score. No LLM."""
+    """Fallback evaluation: load model/pipeline, predict, score. No LLM."""
     state = dict(state)
     model_path_str = state.get("model_path", "")
 
@@ -301,7 +287,7 @@ def step3_local_eval_fallback(state: dict) -> dict:
         state["local_metrics"] = {}
         return state
 
-    pipeline = joblib.load(model_path_str)
+    model = joblib.load(model_path_str)
 
     train_path = Path(state.get("train_path", ""))
     train_df = pd.read_csv(train_path)
@@ -310,38 +296,68 @@ def step3_local_eval_fallback(state: dict) -> dict:
     X = train_df.drop(columns=[target_col], errors="ignore")
     y = train_df[target_col]
 
-    _, X_val, _, y_val = train_test_split(X, y, test_size=cfg.TRAIN_SAMPLE_FRAC, random_state=42)
+    target_transform = state.get("target_transform", "none")
+    if target_transform == "log1p":
+        y = np.log1p(y)
 
-    pred = pipeline.predict(X_val)
+    cat_cols = [
+        c for c in state.get("categorical_columns", []) if c in X.columns
+    ]
+    for c in cat_cols:
+        X[c] = X[c].fillna("__missing__").astype(str)
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=cfg.TRAIN_SAMPLE_FRAC, random_state=42,
+    )
+
+    pred_train = model.predict(X_train)
+    pred_val = model.predict(X_val)
     task_type = state.get("task_type", "classification")
 
     if task_type == "regression":
         from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-        rmse = float(np.sqrt(mean_squared_error(y_val, pred)))
-        mae = float(mean_absolute_error(y_val, pred))
-        r2 = float(r2_score(y_val, pred))
-        state["local_metrics"] = {"rmse": rmse, "mae": mae, "r2": r2}
-        log_msg = f"Step 3 local eval (fallback): rmse={rmse:.4f}, mae={mae:.4f}, r2={r2:.4f}"
+        if target_transform == "log1p":
+            y_train, y_val = np.expm1(y_train), np.expm1(y_val)
+            pred_train, pred_val = np.expm1(pred_train), np.expm1(pred_val)
+        train_metrics = {
+            "mse": float(mean_squared_error(y_train, pred_train)),
+            "mae": float(mean_absolute_error(y_train, pred_train)),
+            "r2": float(r2_score(y_train, pred_train)),
+        }
+        val_metrics = {
+            "mse": float(mean_squared_error(y_val, pred_val)),
+            "mae": float(mean_absolute_error(y_val, pred_val)),
+            "r2": float(r2_score(y_val, pred_val)),
+        }
     else:
         from sklearn.metrics import (
             accuracy_score, precision_score, recall_score, f1_score,
         )
-        acc = accuracy_score(y_val, pred)
-        prec = precision_score(y_val, pred, average="macro", zero_division=0)
-        rec = recall_score(y_val, pred, average="macro", zero_division=0)
-        f1 = f1_score(y_val, pred, average="macro", zero_division=0)
-        state["local_metrics"] = {
-            "accuracy": acc, "precision": prec, "recall": rec, "f1": f1,
+        train_metrics = {
+            "accuracy": accuracy_score(y_train, pred_train),
+            "precision": precision_score(y_train, pred_train, average="macro", zero_division=0),
+            "recall": recall_score(y_train, pred_train, average="macro", zero_division=0),
+            "f1": f1_score(y_train, pred_train, average="macro", zero_division=0),
         }
-        log_msg = f"Step 3 local eval (fallback): accuracy={acc:.4f}, precision={prec:.4f}, recall={rec:.4f}, f1={f1:.4f}"
+        val_metrics = {
+            "accuracy": accuracy_score(y_val, pred_val),
+            "precision": precision_score(y_val, pred_val, average="macro", zero_division=0),
+            "recall": recall_score(y_val, pred_val, average="macro", zero_division=0),
+            "f1": f1_score(y_val, pred_val, average="macro", zero_division=0),
+        }
+
+    state["local_metrics"] = {"train": train_metrics, "val": val_metrics}
 
     metrics_file = Path(state["session_dir"]) / "reports" / "local_metrics.json"
     with open(metrics_file, "w") as f:
         json.dump(state["local_metrics"], f, indent=2)
 
     state["step3_eval_success"] = True
+    state["step3_eval_code"] = "(fallback – no LLM-generated code)"
     if cfg.logger:
-        cfg.logger.info(log_msg)
+        cfg.logger.info("Step 3 local eval (fallback):")
+        cfg.logger.info("  Train metrics: %s", train_metrics)
+        cfg.logger.info("  Val metrics:   %s", val_metrics)
     return state
 
 
@@ -363,7 +379,7 @@ def step4_submission_fallback(state: dict) -> dict:
         state["submission_path"] = ""
         return state
 
-    pipeline = joblib.load(model_path_str)
+    model = joblib.load(model_path_str)
     test_path = Path(state.get("test_path", ""))
     test_df = pd.read_csv(test_path) if test_path.exists() else None
 
@@ -374,7 +390,19 @@ def step4_submission_fallback(state: dict) -> dict:
     target_col = state.get("target_column", "")
     X_test = test_df.drop(columns=[target_col], errors="ignore")
 
-    preds = pipeline.predict(X_test)
+    cat_cols = [
+        c for c in state.get("categorical_columns", []) if c in X_test.columns
+    ]
+    for c in cat_cols:
+        X_test[c] = X_test[c].fillna("__missing__").astype(str)
+
+    preds = model.predict(X_test)
+
+    target_transform = state.get("target_transform", "none")
+    if target_transform == "log1p":
+        import numpy as np
+        preds = np.expm1(preds)
+
     out_path = Path(state["session_dir"]) / "submission.csv"
 
     sample_path = Path(state.get("sample_submission_path", ""))
@@ -449,12 +477,11 @@ def step7_report_fallback(state: dict) -> dict:
 
 
 def step_judge_fallback(state: dict) -> dict:
-    """Детерминированный фолбек для судьи: если LLM недоступна,
-    проверяем просто факт наличия обученной модели и метрик."""
+    """Deterministic judge fallback: check if model and metrics exist."""
     state = dict(state)
 
     metrics_path = Path(state["session_dir"]) / "reports" / "local_metrics.json"
-    model_path = Path(state["session_dir"]) / "models" / "model.joblib"
+    model_path = Path(state.get("model_path", ""))
 
     if metrics_path.exists() and model_path.exists():
         state["verification_decision"] = "SUFFICIENT"
@@ -464,6 +491,6 @@ def step_judge_fallback(state: dict) -> dict:
         state["verification_reasoning"] = "Fallback: Missing model or metrics files."
 
     if cfg.logger:
-        cfg.logger.info("Step verify: Using fallback logic.")
+        cfg.logger.info("Step judge (fallback): %s", state["verification_decision"])
 
     return state
