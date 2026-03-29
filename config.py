@@ -122,7 +122,7 @@ def create_session_dir() -> Path:
     return session_dir
 
 
-def get_llm():
+def get_llm(temperature: float = 0.0):
     """Return a ChatOpenAI instance via OpenRouter, or None on failure."""
     try:
         from langchain_openai import ChatOpenAI
@@ -140,7 +140,7 @@ def get_llm():
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
             model=model_llm,
-            temperature=0,
+            temperature=temperature,
         )
     except Exception as e:
         if logger:

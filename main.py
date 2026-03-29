@@ -26,7 +26,8 @@ Requirements (in .env at project root):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, List
+import concurrent.futures
 
 import config as cfg
 from config import log as _log
@@ -69,7 +70,51 @@ def _setup_iteration_dirs(session_dir: Path, iteration: int) -> dict[str, str]:
     return {"iter_dir": str(iter_dir)}
 
 
-def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
+def run_candidate_branch(branch_id: int, iteration: int, base_state: dict, session_dir: Path) -> dict[str, Any]:
+    """
+    Отдельная ветка исполнения: EDA -> Train -> Eval.
+    Это позволяет запускать несколько гипотез параллельно.
+    """
+    _log(f"[Iter {iteration} | Branch {branch_id}] Starting research branch...")
+
+    # Создаем изолированное состояние для ветки
+    branch_state = dict(base_state)
+    branch_temp = (branch_id - 1) * 0.4
+
+    # Генерируем уникальный путь: session/iter_1/branch_1/
+    branch_dir = session_dir / f"iter_{iteration}" / f"branch_{branch_id}"
+    branch_dir.mkdir(parents=True, exist_ok=True)
+    (branch_dir / "reports").mkdir(exist_ok=True)
+    (branch_dir / "models").mkdir(exist_ok=True)
+
+    branch_state.update({
+        "temperature": branch_temp,
+        "iter_dir": str(branch_dir),
+        "reports_dir": str(branch_dir / "reports"),
+        "model_path": str(branch_dir / "models" / "pipeline.joblib"),
+        "iteration": iteration,
+        "branch_id": branch_id
+    })
+
+    try:
+        # 1. EDA
+        branch_state["improvement_hint"] = branch_state.get("eda_improvement_hint", "")
+        branch_state = step1_eda_agent(branch_state)
+
+        # 2. Train
+        branch_state["improvement_hint"] = branch_state.get("train_improvement_hint", "")
+        branch_state = step2_train_agent(branch_state)
+
+        # 3. Eval
+        branch_state = step3_local_eval_agent(branch_state)
+
+        return branch_state
+    except Exception as e:
+        _log(f"Branch {branch_id} failed with error: {e}", level="error")
+        return branch_state
+
+
+def run_pipeline(max_iterations: int = 3, num_candidates: int = 3) -> dict[str, Any]:
     """Execute the full agent pipeline and return the final state dict."""
     session_dir = cfg.create_session_dir()
     cfg.setup_logging(session_dir)
@@ -92,63 +137,106 @@ def run_pipeline(max_iterations: int = 3) -> dict[str, Any]:
     _log("Loading data subset (%d%% of train)...", cfg.TRAIN_SAMPLE_PCT)
     state = cfg.load_data_subset(state)
 
-    best_state = None
-    best_metric = None
+    best_overall_state = None
+    best_overall_metric = None
 
     for iteration in range(1, max_iterations + 1):
         _log("=" * 60)
-        _log("Refinement iteration %d/%d", iteration, max_iterations)
+        _log(f"Refinement Iteration {iteration}/{max_iterations}")
+        _log(f"Launching {num_candidates} parallel candidates...")
 
-        iter_paths = _setup_iteration_dirs(session_dir, iteration)
-        state.update(iter_paths)
-        state["iteration"] = iteration
+        iteration_results = []
 
-        # -- Step 1: EDA --------------------------------------------------------
-        _log("Step 1 — EDA")
-        state["improvement_hint"] = state.get("eda_improvement_hint", "")
-        state = step1_eda_agent(state)
+        # --- ПАРАЛЛЕЛЬНЫЙ БЛОК ---
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_candidates) as executor:
+            # Каждый кандидат начинает с текущего лучшего состояния (state)
+            futures = [
+                executor.submit(run_candidate_branch, b, iteration, state, session_dir)
+                for b in range(1, num_candidates + 1)
+            ]
 
-        # -- Step 2: Train ------------------------------------------------------
-        _log("Step 2 — Train")
-        state["improvement_hint"] = state.get("train_improvement_hint", "")
-        state = step2_train_agent(state)
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                iteration_results.append(res)
 
-        # -- Step 3: Eval -------------------------------------------------------
-        _log("Step 3 — Eval")
-        state = step3_local_eval_agent(state)
+        # --- JUDGE BLOCK ---
+        _log(f"Iteration {iteration} complete. Filtering candidates by SUFFICIENT verdict...")
 
-        _log_metrics(state.get("local_metrics", {}))
+        # Сначала просим судью оценить каждого кандидата
+        evaluated_results = []
+        for branch_res in iteration_results:
+            evaluated_results.append(step_judge_result_agent(branch_res))
 
-        # -- Judge --------------------------------------------------------------
-        _log("Judge — evaluating results...")
-        state = step_judge_result_agent(state)
+        # Фильтруем только те ветки, которые судья признал годными
+        sufficient_candidates = [
+            res for res in evaluated_results
+            if res.get("verification_decision") == "SUFFICIENT"
+        ]
 
-        val_metrics = state.get("local_metrics", {}).get("val", state.get("local_metrics", {}))
-        if isinstance(val_metrics, dict):
-            task = state.get("task_type", "classification")
-            if task == "regression":
-                current = val_metrics.get("mse")
-                is_better = current is not None and (best_metric is None or current < best_metric)
-            else:
-                current = val_metrics.get("f1") or val_metrics.get("accuracy")
-                is_better = current is not None and (best_metric is None or current > best_metric)
-            if is_better:
-                best_metric = current
-                best_state = dict(state)
-                metric_name = "MSE" if task == "regression" else "F1/Acc"
-                _log("New best model (%s=%.4f)", metric_name, current)
+        best_iter_state = None
+        best_iter_metric = None
 
-        decision = state.get("verification_decision", "NEED_REFINEMENT")
-        if decision == "SUFFICIENT":
-            _log("Judge: SUFFICIENT — stopping refinement loop.")
-            break
-        _log("Judge: NEED_REFINEMENT — continuing loop.")
+        if not sufficient_candidates:
+            _log(
+                f"Iteration {iteration}: No candidates reached SUFFICIENT status. Refinement will continue using the best available attempt.",
+                level="warning")
+            # Для продолжения цикла рефинамента (передачи hints) возьмем лучшего из всех,
+            # но НЕ будем считать его финальным победителем (best_overall_state)
+            candidates_to_compare = evaluated_results
+        else:
+            _log(f"Found {len(sufficient_candidates)} sufficient candidates. Selecting the best one.")
+            candidates_to_compare = sufficient_candidates
 
-    if best_state is not None:
-        _log("Using best model from iterations (best=%.4f)", best_metric)
-        state.update(best_state)
-    else:
-        _log("No valid metric tracked, using last state.", level="warning")
+        # Ищем лучшую метрику в выбранном пуле (либо среди SUFFICIENT, либо среди всех как fallback)
+        for branch_res in candidates_to_compare:
+            val_metrics = branch_res.get("local_metrics", {}).get("val", branch_res.get("local_metrics", {}))
+
+            if isinstance(val_metrics, dict):
+                task = branch_res.get("task_type", "regression")
+                current = val_metrics.get("mse") if task == "regression" else (
+                            val_metrics.get("f1") or val_metrics.get("accuracy"))
+
+                if current is not None:
+                    is_better = (best_iter_metric is None or
+                                 (current < best_iter_metric if task == "regression" else current > best_iter_metric))
+                    if is_better:
+                        best_iter_metric = current
+                        best_iter_state = branch_res
+
+        # Обновляем глобальное состояние и решаем, выходить ли из цикла
+        if best_iter_state:
+            # Если этот кандидат был SUFFICIENT, проверяем, не лучше ли он наших прошлых рекордов
+            is_branch_sufficient = best_iter_state.get("verification_decision") == "SUFFICIENT"
+
+            if is_branch_sufficient:
+                is_overall_better = (best_overall_metric is None or
+                                     (
+                                         best_iter_metric < best_overall_metric if task == "regression" else best_iter_metric > best_overall_metric))
+
+                if is_overall_better:
+                    best_overall_metric = best_iter_metric
+                    best_overall_state = dict(best_iter_state)
+                    _log(f"Updated BEST OVERALL model: Metric = {best_overall_metric:.4f}")
+
+            # Передаем знания на следующую итерацию
+            state.update({
+                "eda_improvement_hint": best_iter_state.get("eda_suggestions", ""),
+                "train_improvement_hint": best_iter_state.get("train_suggestions", ""),
+                "task_type": best_iter_state.get("task_type"),
+                "target_column": best_iter_state.get("target_column"),
+                "numeric_columns": best_iter_state.get("numeric_columns"),
+                "categorical_columns": best_iter_state.get("categorical_columns"),
+            })
+
+            # Если мы нашли хотя бы одного SUFFICIENT кандидата, можем завершить весь Pipeline
+            if is_branch_sufficient:
+                _log("Stopping refinement: at least one branch is SUFFICIENT.")
+                break
+
+    # --- FINAL STEPS ---
+    if best_overall_state:
+        _log("Preparing final submission using best discovered state.")
+        state = best_overall_state
 
     # -- Step 4: Submission -------------------------------------------------
     _log("=" * 60)

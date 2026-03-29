@@ -52,7 +52,8 @@ def _run_feedback_step(
 ) -> dict:
     """Generic wrapper: try LLM agents, fall back on failure."""
     state = dict(state)
-    llm = cfg.get_llm()
+    temp = state.get("temperature", 0.0)
+    llm = cfg.get_llm(temperature=temp)
 
     if not llm:
         _log("%s — no LLM, using fallback", step_name, level="warning")
